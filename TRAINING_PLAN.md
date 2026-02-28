@@ -39,8 +39,9 @@ Port consgpt.lisp's `model.lisp`.
 
 Port consgpt.lisp's `train.lisp`. This is the CLI script that ties everything together.
 
-- Call `initVocabulary()` to populate Pass 1 vocab, then `buildBpeVocab(merges, nextId)` with trained or loaded merges
-- Read training data from stdin, tokenize with `tokenize()` → look up each token in `vocab` (Pass 1) or `bpeEncodeToken()` (Pass 2) → flat ID array
+- Call `initVocabulary()` to populate Pass 1 vocab
+- Load merge rules from `build/merges.tsv` via `parseMerges()`, then call `buildBpeVocab(merges, nextId)` to assign BPE IDs
+- Read training data (WAT file), tokenize with `tokenize()` → look up each token in `vocab` (Pass 1) or `bpeEncodeToken()` (Pass 2) → flat ID array
 - Initialize model
 - Training loop:
   - Batch extraction (contiguous window from corpus)
@@ -51,7 +52,27 @@ Port consgpt.lisp's `train.lisp`. This is the CLI script that ties everything to
   - Print loss per step
 - Checkpointing every N steps
 
-Checkpointing format TBD — could write JSON or a binary format since we don't have S-expressions. JSON is simpler for debugging.
+### Checkpoint format: binary (`build/model.bin`)
+
+Binary format — compact, natural for WASM, trivial to read/write via linear memory. The file is a flat sequence of little-endian values in a fixed order:
+
+```
+[i32]  step number
+[i32]  nEmbd
+[i32]  nLayer
+[i32]  nHead
+[i32]  blockSize
+[i32]  vocabSize
+[f32 × N]  weight values (all matrices in sorted key order, row-major)
+[f32 × N]  Adam first moment (m) — one per parameter
+[f32 × N]  Adam second moment (v) — one per parameter
+```
+
+The weight matrix order follows consgpt.lisp's convention: state dict keys sorted alphabetically (`layer0.attn_wk`, `layer0.attn_wo`, ..., `layer1.mlp_fc2`, `wpe`, `wte`). Each matrix is written row-major.
+
+On load, the hyperparameters are validated against the current model config. Only the most recent checkpoint is needed — the file is overwritten on each save.
+
+Checkpoint functions: `saveCheckpoint(path, step, adamM, adamV)` and `loadCheckpoint(path)` in `src/checkpoint.ts`.
 
 ## Step 5: Integration test
 
@@ -76,6 +97,7 @@ This validates the full pipeline without needing a full training run.
 lexer.ts (done)
   └─ vocabulary.ts (done)
   └─ bpe.ts (done)
+  └─ train-bpe.ts (done)
 autograd.ts (independent)
 model.ts (depends on autograd)
 train.ts (depends on all above)

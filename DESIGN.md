@@ -146,7 +146,36 @@ A hybrid tokenizer handles both classes, following the same two-pass design as [
 
    **Key encoding:** Since AssemblyScript Maps require string keys, word arrays are encoded as `\x01`-separated strings and pair keys use `\0` as the separator (`left + "\0" + right`).
 
-   **Exports:** `bpeMerges`, `bpeVocab`, `unkId`, `tokenToChars()`, `mergePair()`, `countPairs()`, `trainBpe()`, `applyMerges()`, `bpeEncodeToken()`, `buildBpeVocab()`, `getBpeNextId()`
+   **Exports:** `bpeMerges`, `bpeVocab`, `unkId`, `tokenToChars()`, `mergePair()`, `countPairs()`, `trainBpe()`, `applyMerges()`, `bpeEncodeToken()`, `buildBpeVocab()`, `getBpeNextId()`, `serializeMerges()`, `parseMerges()`
+
+### BPE Training Pipeline
+
+BPE merge rules must be trained on a corpus before model training can begin. The pipeline is:
+
+1. **Build** — compile wasmgpt's AssemblyScript source to WASM (`npm run build`)
+2. **Disassemble** — convert to WAT with offset map (`npm run wat`, requires `wasm2wat` on PATH)
+3. **Annotate** — inject source comments via [watnot](https://github.com/spratt/watnot) (`npm run annotate`, watnot is a git submodule)
+4. **Train** — run `src/train-bpe.ts` on the annotated WAT to learn merge rules (`npm run train:bpe`)
+
+The full pipeline is chained as `npm run train:bpe`, which runs all four steps and writes merge rules to `build/merges.tsv`.
+
+`src/train-bpe.ts` is a WASI CLI program (following watnot's I/O pattern) that:
+- Reads a WAT file path from CLI args
+- Tokenizes with the lexer, partitions tokens into known (in `vocab`) and unknown
+- Calls `trainBpe(unknowns, numMerges)` (default 256 merges)
+- Writes merge rules to stdout as TSV (one merge per line, tab-separated: `left\tright`)
+- Writes diagnostic statistics to stderr
+
+**Merge persistence format:** Tab-separated values, one merge per line. Parsed by `parseMerges()`, serialized by `serializeMerges()`. The format is loaded by the training entry point at startup so BPE does not need to be retrained on every run.
+
+**Initial corpus statistics** (self-referential build of wasmgpt):
+- 11,849 lines of annotated WAT
+- 53,102 total tokens after lexing
+- 42,187 known tokens (79.4%, in Pass 1 vocabulary)
+- 10,915 unknown tokens (20.6%, encoded by BPE)
+- 256 merge rules learned
+
+Comments are stripped by the lexer, so watnot's injected comments don't affect tokenization. The annotations are preserved in the corpus for future use when comment-aware training is implemented.
 
 ### Format Agnosticism
 
@@ -256,6 +285,7 @@ The browser deployment target opens the possibility of distributed federated tra
 | Corpus annotation | Source-map-based comment transplantation via [watnot](https://github.com/spratt/watnot) | Human-authored intent without synthetic generation |
 | Deployment | Browser (WASM + WebGPU) | Aligns with domain; no server infrastructure required |
 | Training trigger | WAT code completion | Keeps model simple; natural language deferred to fine-tuning phase |
+| BPE merge persistence | TSV (tab-separated, one merge per line) | Simple to parse in AS, human-readable, no JSON parser needed |
 | Self-reference | Project source in corpus | Elegant bootstrapping; increases corpus coverage of idiomatic WAT |
 
 ---
