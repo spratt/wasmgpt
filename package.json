@@ -11,6 +11,8 @@
     "corpus": "npm run build && npm run wat && npm run annotate",
     "build:train-bpe": "asc src/train-bpe.ts --outFile build/train-bpe.wasm --config node_modules/@assemblyscript/wasi-shim/asconfig.json --debug",
     "train:bpe": "npm run corpus && npm run build:train-bpe && wasmtime --dir . build/train-bpe.wasm build/wasmgpt.annotated.wat > build/merges.tsv",
+    "build:train": "asc src/train.ts --outFile build/train.wasm --config node_modules/@assemblyscript/wasi-shim/asconfig.json --debug",
+    "train": "npm run build:train && wasmtime --dir . build/train.wasm build/wasmgpt.annotated.wat build/merges.tsv",
     "test": "as-test"
   },
   "devDependencies": {

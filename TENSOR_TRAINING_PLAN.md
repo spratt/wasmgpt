@@ -42,6 +42,9 @@ AssemblyScript has no closures, so we cannot store a backward function on each n
 | `DIV_SCALAR` | `C[i] = A[i] / s` | `A.grad[i] += g[i] / s` |
 | `SLICE` | `C = A[start..end]` | `A.grad[start+i] += g[i]` |
 | `CONCAT` | `C = [A₀; A₁; ...; Aₙ]` | `Aₕ.grad += g[hStart..hEnd]` for each head |
+| `MUL` | `C[i] = A[i] * B[i]` | `A.grad[i] += g[i] * B.data[i]`, `B.grad[i] += g[i] * A.data[i]` |
+| `CROSS_ENTROPY` | `C = -log(softmax(A)[target])` | `A.grad[i] += g[0] * (probs[i] - (i == target ? 1 : 0))`, probs from `cacheData` |
+| `SCALE` | `C[i] = A[i] * B.data[0]` (A is vector, B is scalar) | `A.grad[i] += g[i] * B.data[0]`, `B.grad[0] += sum(g[i] * A.data[i])` |
 
 ### Adam optimizer (from consgpt.lisp train.lisp)
 
@@ -77,6 +80,9 @@ const OP_MUL_SCALAR: i32 = 10;
 const OP_DIV_SCALAR: i32 = 11;
 const OP_SLICE: i32 = 12;
 const OP_CONCAT: i32 = 13;
+const OP_MUL: i32 = 14;          // elementwise multiply (for attention dot product)
+const OP_CROSS_ENTROPY: i32 = 15; // fused softmax + negative log-likelihood
+const OP_SCALE: i32 = 16;        // vector * scalar tensor (for attention weighted sum)
 ```
 
 ### Tensor class
@@ -86,11 +92,12 @@ class Tensor {
   data: StaticArray<f32>;      // contiguous storage, row-major
   grad: StaticArray<f32>;      // same size as data, accumulated during backward
   shape: StaticArray<i32>;     // [rows, cols] for 2D, [len] for 1D, [] for scalar
-  children: Array<Tensor>;     // input tensors (null for leaves)
+  children: Array<Tensor>;     // input tensors (empty array for leaves)
   op: i32;                     // which operation produced this tensor
   scalarArg: f32;              // auxiliary scalar (for MUL_SCALAR, DIV_SCALAR, RMSNORM eps)
   intArg: i32;                 // auxiliary int (for EMBEDDING row index, SLICE start)
   intArg2: i32;                // auxiliary int (for SLICE end)
+  cacheData: StaticArray<f32>; // auxiliary storage (cross-entropy stores softmax probs here)
 }
 ```
 
@@ -109,6 +116,9 @@ class Tensor {
 - **`divScalar(a: Tensor, s: f32): Tensor`** — elementwise divide by scalar
 - **`slice(a: Tensor, start: i32, end: i32): Tensor`** — extract contiguous subvector
 - **`concat(parts: Array<Tensor>): Tensor`** — concatenate vectors
+- **`mul(a: Tensor, b: Tensor): Tensor`** — elementwise multiply, same shape (needed for attention dot product: `dot(q, k) = sum(mul(q, k))`)
+- **`crossEntropy(logits: Tensor, targetId: i32): Tensor`** — fused softmax + negative log-likelihood; stores softmax probabilities in `cacheData` for backward
+- **`scale(vec: Tensor, scalar: Tensor): Tensor`** — multiply vector by scalar tensor (needed for attention weighted sum where the weight must remain a differentiable Tensor)
 
 ### Leaf constructors
 
@@ -262,12 +272,31 @@ logits = matmul(wte, x)       // [vocabSize]
 
 ### Attention detail: dot product and weighted sum
 
-The dot product `dot(qH, kH)` can be implemented as `sum(mul_elementwise(qH, kH))` or as a special-case `matmul` treating both as vectors. For the weighted sum of values, we need elementwise multiply + accumulate across positions. This requires:
-- A `dot(a, b): Tensor` operation (scalar result) — or reuse `matmul` with row vectors
-- Building the attention scores as a vector, then applying `softmax`
-- Weighted sum: accumulate `mulScalar(vH_t, attnWeight_t)` with `add`
+**Dot product:** `dot(qH, kH) = sum(mul(qH, kH))` — two graph nodes per dot product using `OP_MUL` (elementwise multiply) and `OP_SUM`.
 
-The exact factoring will be determined during implementation. The key constraint is that every operation must be a differentiable tensor op with a backward rule.
+**Attention scores:** Build a vector of scaled dot products across cached positions, then apply softmax:
+```
+scores = []
+for t = 0 to seqLen-1:
+  kH = slice(cacheKeys[li][t], hs, he)
+  dotProd = sum(mul(qH, kH))                       // scalar tensor
+  scaled = divScalar(dotProd, Mathf.sqrt(f32(headDim)))
+  scores.push(scaled)
+scoreVec = concat(scores)        // [seqLen]
+attnWeights = softmax(scoreVec)  // [seqLen]
+```
+
+**Weighted sum:** Uses `OP_SCALE` to multiply each value vector by its corresponding attention weight. The attention weight must remain a differentiable Tensor (using `mulScalar` with a raw `f32` would break gradient flow through softmax):
+```
+headOut = scale(slice(cacheVals[li][0], hs, he), slice(attnWeights, 0, 1))
+for t = 1 to seqLen-1:
+  headOut = add(headOut, scale(
+    slice(cacheVals[li][t], hs, he),
+    slice(attnWeights, t, t+1)
+  ))
+```
+
+All operations are differentiable tensor ops. Gradients flow through `scale` → `softmax` → `concat` → `divScalar` → `sum` → `mul` → `slice` back to q, k, v, and through the KV cache.
 
 ## Step 4: `src/train.ts` — Training entry point
 
@@ -364,11 +393,13 @@ Same as consgpt.lisp:
 
 ### Cross-entropy loss detail
 
-For each position, we need `-log(probs[targetId])`. Options:
-1. `neg(logOp(slice(probs, targetId, targetId+1)))` — slice extracts a 1-element tensor, log it, negate it. Clean but creates 3 graph nodes per position.
-2. A dedicated `crossEntropyLoss(logits, targetId)` op that fuses softmax + log + index. More efficient, fewer graph nodes. Backward: `grad[i] = probs[i] - (i == targetId ? 1 : 0)`.
+For each position, we need `-log(probs[targetId])`. We use the fused `OP_CROSS_ENTROPY` (op 15): `crossEntropy(logits, targetId)`.
 
-Option 2 is better for performance and numerical stability. Add `OP_CROSS_ENTROPY` to the op enum.
+Forward: compute log-sum-exp for numerical stability, then `loss = -(logits[target] - max - log(sumExp))`. Store the softmax probabilities in `cacheData` for backward use (AS has no closures, so we cannot capture them).
+
+Backward: `logits.grad[i] += upstream * (probs[i] - (i == targetId ? 1 : 0))`, where probs come from `cacheData`.
+
+This is better than the composed version `neg(logOp(slice(softmax(logits), target, target+1)))` which creates 4 graph nodes per position (128 extra nodes for trainSeqLen=32) and is less numerically stable.
 
 ## Step 5: `src/checkpoint.ts` — Checkpoint persistence
 
@@ -405,6 +436,10 @@ On load, the hyperparameters are validated against the current model config. Onl
   - For each key in sorted order: read into tensor's `data` array
   - For each key in sorted order: read into adamM entry
   - For each key in sorted order: read into adamV entry
+
+### Binary I/O approach
+
+Use raw WASI `fd_write`/`fd_read` with `changetype<usize>(staticArray)` to write/read `StaticArray<f32>` directly to/from the file descriptor. This avoids the overhead of `Descriptor.write()` which copies into a `u8[]` first. StaticArray data is stored inline starting at the object pointer, so `changetype<usize>(arr)` gives the address of the first element and `arr.length << 2` gives the byte count.
 
 ### Advantage over scalar version
 
@@ -452,5 +487,49 @@ train.ts (depends on all above)
 - `f32` arithmetic: may need explicit `f32()` casts to avoid implicit promotion
 - `Map` keys must be value types or strings — no object keys
 - `StaticArray<f32>` for contiguous tensor storage (not `Array<f32>` — StaticArray has fixed size and no indirection, maps cleanly to linear memory and future GPU buffers)
-- `Mathf.log`, `Mathf.exp`, `Mathf.sqrt` for f32 math (not `Math.log` which returns f64)
+- `Mathf.log`, `Mathf.exp`, `Mathf.sqrt`, `Mathf.pow`, `Mathf.max`, `Mathf.abs` for f32 math (not `Math.log` which returns f64). All confirmed in AS standard library via `IMath<f32>` interface.
 - Recursive DFS may hit stack limits on deep graphs — use iterative stack-based traversal for topological sort
+- `Set<usize>` works for topological sort visited tracking — `usize` is a value type (`u32` in wasm32), and `changetype<usize>(tensor)` gives the unique object address
+- `changetype<usize>(staticArray)` gives the memory address of a StaticArray's data — used for efficient binary I/O in checkpoint persistence
+
+## Lessons learned (post-implementation)
+
+### Implementation stats
+
+- **tensor.ts**: ~530 lines (17 ops, Tensor class, forward ops, backward dispatch, topological sort)
+- **model.ts**: ~180 lines (PRNG, weight init, state dict, full GPT-2 forward pass)
+- **checkpoint.ts**: ~160 lines (raw WASI binary I/O, save/load with header validation)
+- **train.ts**: ~210 lines (CLI parsing, data loading, Adam optimizer, training loop)
+- **tests**: 600 total (tensor: 130, model: 42, integration: 5, plus existing lexer/vocab/BPE tests)
+- **Total parameter count**: 121,088 (with vocab=100), actual training uses vocab=757
+
+### Training smoke test results
+
+- Vocabulary: 568 pass-1 tokens + 189 BPE merges = 757 total
+- Corpus: 53,102 tokens → 96,759 encoded token IDs
+- Loss decrease over 5 steps: 6.58 → 6.12 (healthy gradient descent)
+- Initial loss ~6.58 ≈ ln(757) ≈ 6.63 (near-random prediction, as expected)
+
+### Issues encountered during implementation
+
+1. **`concat` backward bug**: Initially wrote `child.grad[offset + j]` — wrong because each child's grad array is indexed from 0 within that child. The correct code is `child.grad[j] += g[offset + j]` where `offset` indexes into the output grad, not the child grad.
+
+2. **`rmsnorm` backward complexity**: The backward rule for RMS normalization has a non-trivial chain rule. The clean formula is `a.grad[i] += rmsScale * (g[i] - t.data[i] * dotGOut / n)` where `rmsScale = 1/rms`, `dotGOut = sum(g * t.data)`, and `n` is the vector length.
+
+3. **`tensorSum` naming**: Named `tensorSum` instead of `sum` to avoid potential naming conflicts in AssemblyScript.
+
+4. **Graph detachment scope**: `backward()` detaches children (sets to empty array) but does not reset `op`. This is correct — op is metadata, children are what hold the graph alive for GC.
+
+5. **`crossEntropy` cacheData pattern**: Storing softmax probabilities in `cacheData` during forward for use in backward works well as a closure substitute. This pattern could be reused for any op that needs intermediate results during backward.
+
+### Deviations from plan
+
+- **Loss computation**: The plan's Step 4 pseudocode showed `softmax` + `neg(logOp(slice(...)))` for loss, but the actual implementation uses the fused `crossEntropy` op (as specified in the cross-entropy detail section). No deviation, just the plan had two descriptions.
+- **`loadCheckpoint` signature**: Takes `adamM` and `adamV` as parameters (not just path), since it needs to restore optimizer state. The plan's Step 5 listed the simpler signature but the implementation correctly passes optimizer state.
+
+### What went well
+
+- The op enum dispatch pattern is clean and extensible — adding a new op requires: (1) constant, (2) forward function, (3) backward case in `backwardOp`.
+- Finite-difference gradient checking caught no bugs beyond the concat/rmsnorm issues found during initial development.
+- The binary checkpoint format is simple and efficient — just raw memory dumps in sorted key order.
+- Integration tests validate the full pipeline in ~100 lines of test code.
