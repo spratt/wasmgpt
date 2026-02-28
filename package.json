@@ -5,6 +5,12 @@
   "scripts": {
     "build": "asc src/index.ts --outFile build/wasmgpt.wasm --config node_modules/@assemblyscript/wasi-shim/asconfig.json --debug --sourceMap",
     "build:release": "asc src/index.ts --outFile build/wasmgpt.wasm --config node_modules/@assemblyscript/wasi-shim/asconfig.json --optimize --sourceMap",
+    "setup:watnot": "cd watnot && npm install && npm run build",
+    "wat": "wasm2wat build/wasmgpt.wasm --fold-exprs --output build/wasmgpt.wat --offset-map build/wasmgpt.offsets.json",
+    "annotate": "wasmtime --dir . watnot/build/watnot.wasm build/wasmgpt.wasm.map build/wasmgpt.wat build/wasmgpt.offsets.json src/index.ts src/lexer.ts src/vocabulary.ts src/bpe.ts > build/wasmgpt.annotated.wat",
+    "corpus": "npm run build && npm run wat && npm run annotate",
+    "build:train-bpe": "asc src/train-bpe.ts --outFile build/train-bpe.wasm --config node_modules/@assemblyscript/wasi-shim/asconfig.json --debug",
+    "train:bpe": "npm run corpus && npm run build:train-bpe && wasmtime --dir . build/train-bpe.wasm build/wasmgpt.annotated.wat > build/merges.tsv",
     "test": "as-test"
   },
   "devDependencies": {

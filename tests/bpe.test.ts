@@ -4,6 +4,7 @@ import {
   trainBpe, applyMerges, bpeEncodeToken,
   buildBpeVocab, getBpeNextId,
   bpeVocab, unkId,
+  serializeMerges, parseMerges,
 } from "../src/bpe";
 import { initVocabulary, nextId } from "../src/vocabulary";
 
@@ -217,4 +218,45 @@ test("bpeEncodeToken empty token", () => {
   buildBpeVocab(merges, 0);
   const ids = bpeEncodeToken("");
   expect(ids.length).equal(0);
+});
+
+// ===== serializeMerges / parseMerges =====
+
+test("serializeMerges produces tab-separated lines", () => {
+  const merges: Array<Array<string>> = [["A", "B"], ["AB", "C"]];
+  const result = serializeMerges(merges);
+  expect(result).equal("A\tB\nAB\tC\n");
+});
+
+test("serializeMerges empty merges", () => {
+  const merges = new Array<Array<string>>();
+  const result = serializeMerges(merges);
+  expect(result).equal("");
+});
+
+test("parseMerges round-trip", () => {
+  const original: Array<Array<string>> = [["A", "B"], ["AB", "C"], ["$", "a"]];
+  const serialized = serializeMerges(original);
+  const parsed = parseMerges(serialized);
+  expect(parsed.length).equal(3);
+  expect(parsed[0][0]).equal("A");
+  expect(parsed[0][1]).equal("B");
+  expect(parsed[1][0]).equal("AB");
+  expect(parsed[1][1]).equal("C");
+  expect(parsed[2][0]).equal("$");
+  expect(parsed[2][1]).equal("a");
+});
+
+test("parseMerges skips empty lines", () => {
+  const text = "A\tB\n\nAB\tC\n";
+  const parsed = parseMerges(text);
+  expect(parsed.length).equal(2);
+});
+
+test("parseMerges handles no trailing newline", () => {
+  const text = "A\tB\nAB\tC";
+  const parsed = parseMerges(text);
+  expect(parsed.length).equal(2);
+  expect(parsed[1][0]).equal("AB");
+  expect(parsed[1][1]).equal("C");
 });

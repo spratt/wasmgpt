@@ -1,4 +1,4 @@
 module.exports = {
   include: ["src", "tests"],
-  exclude: ["src/index.ts"],
+  exclude: ["src/index.ts", "src/train-bpe.ts"],
 };

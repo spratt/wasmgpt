@@ -25,7 +25,7 @@ This project is based on [consgpt.lisp](https://github.com/spratt/consgpt.lisp),
 
 The following components port with only surface-level changes (data types, syntax):
 
-- **Hybrid tokenizer architecture** — consgpt.lisp uses a two-pass tokenizer: Pass 1 assigns fixed integer IDs to all 978 ANSI CL symbols plus syntax tokens, Pass 2 uses BPE for user-defined names, numbers, and strings. WasmGPT replaces the 978 CL symbols with ~436 WASM instruction opcodes but keeps the same two-pass design. Both projects face the same split: a closed, enumerable set of language primitives plus open-ended user content.
+- **Hybrid tokenizer architecture** — consgpt.lisp uses a two-pass tokenizer: Pass 1 assigns fixed integer IDs to all 978 ANSI CL symbols plus syntax tokens, Pass 2 uses BPE for user-defined names, numbers, and strings. WasmGPT replaces the 978 CL symbols with 542 WASM instruction mnemonics (plus syntax tokens and structural keywords, ~553 unique tokens total) but keeps the same two-pass design. Both projects face the same split: a closed, enumerable set of language primitives plus open-ended user content.
 
 - **BPE training and encoding** — the BPE algorithm (character splitting, pair counting, iterative merging, subword encoding) is language-agnostic. The merge training (`train-bpe.lisp`) and encoding (`bpe.lisp`) logic ports directly.
 
@@ -44,7 +44,7 @@ The following components port with only surface-level changes (data types, synta
 | Component | consgpt.lisp | WasmGPT |
 |---|---|---|
 | Implementation language | Common Lisp (SBCL) | AssemblyScript (compiled to WASM) |
-| Fixed vocabulary | 978 ANSI CL symbols + 10 syntax tokens + 15 LOOP keywords + 13 common keywords = 1,016 | ~436 WASM 3.0 instruction opcodes + WAT syntax tokens (`(`, `)`, `;;`, etc.) |
+| Fixed vocabulary | 978 ANSI CL symbols + 10 syntax tokens + 15 LOOP keywords + 13 common keywords = 1,016 | 542 WASM instruction mnemonics + 2 syntax tokens + 17 structural keywords + 7 type names = ~553 unique tokens (568 registered, 15 keyword/instruction overlaps deduplicated) |
 | Lexer | Common Lisp reader (atoms, strings, dispatch macros, `#\|...\|#` block comments) | WAT S-expression parser (mnemonics, immediates, identifiers, `;;` comments) |
 | Numeric precision | `double-float` (64-bit) | `f32` (32-bit) — matches WASM native type and WebGPU shader constraints |
 | Data structures | Hash tables, cons lists, defstruct | Maps, Arrays, classes with field initializers |
@@ -77,7 +77,7 @@ All helper functions are top-level (no closures, per AssemblyScript constraints)
 
 ### Model size
 
-consgpt.lisp's Tiny config (E=64, L=2, H=4, B=256, V=1,382) has 203K parameters and trains in ~10 minutes per 100 steps on CPU. WasmGPT's vocabulary will be smaller (~500-600 total tokens vs. 1,382), further reducing embedding and output matrix dimensions. The same Tiny config is a reasonable starting point, with the option to scale up once the pipeline is validated.
+consgpt.lisp's Tiny config (E=64, L=2, H=4, B=256, V=1,382) has 203K parameters and trains in ~10 minutes per 100 steps on CPU. WasmGPT's Pass 1 vocabulary is ~553 tokens (before BPE additions), smaller than consgpt.lisp's 1,016, further reducing embedding and output matrix dimensions. The same Tiny config is a reasonable starting point, with the option to scale up once the pipeline is validated.
 
 ---
 
@@ -120,9 +120,33 @@ WASM has two classes of content that require different tokenization strategies:
 
 A hybrid tokenizer handles both classes, following the same two-pass design as [consgpt.lisp](https://github.com/spratt/consgpt.lisp):
 
-1. **Pass 1: Instruction tokens** — each WAT instruction opcode gets a dedicated token ID, analogous to how consgpt.lisp assigns fixed IDs to all 978 ANSI CL symbols. With ~436 instructions in WASM 3.0 (including SIMD), this is a small, fixed vocabulary. Binary opcodes and WAT mnemonics share the same token ID since they are two representations of the same instruction.
+1. **Pass 1: Instruction tokens** (`src/vocabulary.ts`) — analogous to consgpt.lisp's `symbol-tokenizer.lisp`. Registers all known tokens with fixed integer IDs via an idempotent `reg()` function. Registration order:
+   1. Syntax tokens: `(`, `)`
+   2. Structural WAT keywords: `module`, `type`, `func`, `import`, `export`, `memory`, `table`, `global`, `data`, `elem`, `start`, `param`, `result`, `local`, `mut`, `offset`, `align`
+   3. Type names: `i32`, `i64`, `f32`, `f64`, `v128`, `funcref`, `externref`
+   4. All 542 WASM instruction mnemonics from [wabt's `opcode.def`](https://github.com/WebAssembly/wabt), grouped by category: control flow, variable access, reference types, table ops, memory loads/stores, memory ops, bulk memory, constants, i32/i64/f32/f64 numeric, conversions, i32/i64 atomics, atomic fence/wait/notify, SIMD v128, SIMD i8x16/i16x8/i32x4/i64x2/f32x4/f64x2
 
-2. **Pass 2: BPE tokens** — everything else (immediates, identifiers, comments, data) is tokenized via Byte Pair Encoding trained on the corpus. This is the same BPE algorithm used in consgpt.lisp: character splitting, weighted pair counting, iterative merging, and subword encoding with an `<UNK>` fallback.
+   568 tokens are registered; after deduplication (15 structural keywords overlap with instruction mnemonics, e.g. `block`, `loop`, `if`, `call`, `select`), **~553 unique tokens** remain. The `reg()` function is idempotent — registering a token that already exists is a no-op.
+
+   Mnemonics were extracted from wabt's `opcode.def` using:
+   ```bash
+   grep '^WABT_OPCODE' opcode.def | grep -v 'Interp' | awk -F'"' '{print $2}' | sort -u
+   ```
+   Interpreter-only opcodes (marked `Interp`) are excluded. The only duplicate text mnemonic is `select` (appears for both `Select` and `SelectT` enum entries).
+
+   **Exports:** `vocab: Map<string, i32>`, `nextId: i32`, `initVocabulary(): void`
+
+2. **Pass 2: BPE tokens** (`src/bpe.ts`) — ported from consgpt.lisp's `bpe.lisp`. The BPE algorithm is language-agnostic. Everything not in the Pass 1 vocabulary (immediates, identifiers, comments, data) is tokenized via Byte Pair Encoding trained on the corpus.
+
+   **Training:** `trainBpe(unknownTokens, numMerges)` builds a frequency table of character-split words, then iteratively finds and applies the most frequent adjacent pair as a merge rule.
+
+   **Encoding:** `bpeEncodeToken(token)` splits the token into characters, applies all learned merges via `applyMerges()`, then maps each resulting subword to its integer ID. Unknown subwords fall back to `<UNK>`.
+
+   **Vocabulary building:** `buildBpeVocab(merges, startId)` assigns IDs starting from Pass 1's `nextId`, registering single characters (sorted) first, then merged symbols in merge order, then `<UNK>` as the final token.
+
+   **Key encoding:** Since AssemblyScript Maps require string keys, word arrays are encoded as `\x01`-separated strings and pair keys use `\0` as the separator (`left + "\0" + right`).
+
+   **Exports:** `bpeMerges`, `bpeVocab`, `unkId`, `tokenToChars()`, `mergePair()`, `countPairs()`, `trainBpe()`, `applyMerges()`, `bpeEncodeToken()`, `buildBpeVocab()`, `getBpeNextId()`
 
 ### Format Agnosticism
 

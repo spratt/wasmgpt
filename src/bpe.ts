@@ -222,3 +222,28 @@ export function buildBpeVocab(merges: Array<Array<string>>, startId: i32): void 
 export function getBpeNextId(): i32 {
   return bpeNextId;
 }
+
+// ===== Merge persistence =====
+
+export function serializeMerges(merges: Array<Array<string>>): string {
+  let result = "";
+  for (let i = 0; i < merges.length; i++) {
+    result += merges[i][0] + "\t" + merges[i][1] + "\n";
+  }
+  return result;
+}
+
+export function parseMerges(text: string): Array<Array<string>> {
+  const merges = new Array<Array<string>>();
+  const lines = text.split("\n");
+  for (let i = 0; i < lines.length; i++) {
+    const line = lines[i];
+    if (line.length == 0) continue;
+    const tabIdx = line.indexOf("\t");
+    if (tabIdx < 0) continue;
+    const left = line.substring(0, tabIdx);
+    const right = line.substring(tabIdx + 1);
+    merges.push([left, right]);
+  }
+  return merges;
+}

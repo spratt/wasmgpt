@@ -39,8 +39,8 @@ Port consgpt.lisp's `model.lisp`.
 
 Port consgpt.lisp's `train.lisp`. This is the CLI script that ties everything together.
 
-- Load vocabulary, BPE merges (if available)
-- Read training data from stdin, tokenize with lexer → Pass 1 → Pass 2 → flat ID array
+- Call `initVocabulary()` to populate Pass 1 vocab, then `buildBpeVocab(merges, nextId)` with trained or loaded merges
+- Read training data from stdin, tokenize with `tokenize()` → look up each token in `vocab` (Pass 1) or `bpeEncodeToken()` (Pass 2) → flat ID array
 - Initialize model
 - Training loop:
   - Batch extraction (contiguous window from corpus)
@@ -74,8 +74,8 @@ This validates the full pipeline without needing a full training run.
 
 ```
 lexer.ts (done)
-  └─ vocabulary.ts (done or in progress)
-  └─ bpe.ts (done or in progress)
+  └─ vocabulary.ts (done)
+  └─ bpe.ts (done)
 autograd.ts (independent)
 model.ts (depends on autograd)
 train.ts (depends on all above)
