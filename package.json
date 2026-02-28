@@ -1,0 +1,16 @@
+{
+  "name": "wasmgpt",
+  "version": "0.1.0",
+  "description": "A GPT trained on WebAssembly",
+  "scripts": {
+    "build": "asc src/index.ts --outFile build/wasmgpt.wasm --config node_modules/@assemblyscript/wasi-shim/asconfig.json --debug --sourceMap",
+    "build:release": "asc src/index.ts --outFile build/wasmgpt.wasm --config node_modules/@assemblyscript/wasi-shim/asconfig.json --optimize --sourceMap",
+    "test": "as-test"
+  },
+  "devDependencies": {
+    "@assemblyscript/wasi-shim": "^0.1",
+    "as-wasi": "^0.6.0",
+    "assemblyscript": "^0.27",
+    "assemblyscript-unittest-framework": "^2.1.0"
+  }
+}
