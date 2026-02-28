@@ -54,7 +54,26 @@ The following components port with only surface-level changes (data types, synta
 
 ### Lexer adaptation
 
-The consgpt.lisp lexer (`lexer.lisp`) handles CL-specific syntax: `#'` (function), `#\` (character), `#(` (vector), `` ` `` (backquote), `,` and `,@` (unquote). The WAT lexer is simpler — WAT has only parentheses, atoms (instruction mnemonics, `$identifiers`, numeric literals), and `;;` comments. No dispatch macros, no reader macros, no string escapes beyond what WAT defines. The lexer is smaller but must recognize WAT instruction mnemonics to assign them fixed token IDs in Pass 1.
+The consgpt.lisp lexer (`lexer.lisp`) handles CL-specific syntax: `#'` (function), `#\` (character), `#(` (vector), `` ` `` (backquote), `,` and `,@` (unquote). The WAT lexer is simpler — WAT has only parentheses, atoms (instruction mnemonics, `$identifiers`, numeric literals), and `;;` comments. No dispatch macros, no reader macros, no string escapes beyond what WAT defines.
+
+The WAT lexer is implemented in `src/lexer.ts` and exports a single function:
+
+```typescript
+export function tokenize(text: string): Array<string>
+```
+
+It splits WAT text into a flat list of token strings. Comments are stripped. Tokens are returned verbatim (case-sensitive — unlike consgpt.lisp's lexer which upcases atoms, since WAT is case-sensitive). Both Pass 1 and Pass 2 of the hybrid tokenizer consume the lexer's output.
+
+**Token types:**
+- `(` and `)` — single-character tokens
+- `;;` line comments — stripped
+- `(; ... ;)` block comments — stripped, with nesting support via depth counter
+- `"..."` string literals — returned including quotes, backslash escapes handled
+- Atoms — everything else (mnemonics, identifiers, numbers, keywords) until a terminator: whitespace, `(`, `)`, `"`, or `;`
+
+**Dispatch order:** line comment → block comment → `(` → `)` → `"` → atom. The `(;` check precedes the `(` check so block comment starts are not emitted as open-paren tokens. Including `;` in the terminator set ensures atoms stop before `;;` comments even without intervening whitespace.
+
+All helper functions are top-level (no closures, per AssemblyScript constraints). Character tests use `charCodeAt()` with numeric constants.
 
 ### Model size
 
