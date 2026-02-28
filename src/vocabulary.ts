@@ -4,7 +4,11 @@
 // Analogous to consgpt.lisp's symbol-tokenizer.lisp.
 
 export let vocab: Map<string, i32> = new Map<string, i32>();
-export let nextId: i32 = 0;
+let nextId: i32 = 0;
+
+export function getNextId(): i32 {
+  return nextId;
+}
 
 function reg(name: string): void {
   if (!vocab.has(name)) {

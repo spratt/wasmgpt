@@ -7,8 +7,8 @@
 
 import { CommandLine, Console, FileSystem, Descriptor } from "as-wasi/assembly";
 import { tokenize } from "./lexer";
-import { vocab, nextId, initVocabulary } from "./vocabulary";
-import { trainBpe, serializeMerges } from "./bpe";
+import { vocab, getNextId, initVocabulary } from "./vocabulary";
+import { trainBpe, serializeMerges, buildBpeVocab, serializeVocab } from "./bpe";
 
 // --- Parse CLI args ---
 
@@ -51,9 +51,9 @@ for (let i = 0; i < tokens.length; i++) {
 }
 
 Console.error(
-  "Corpus: " + tokens.length.toString() + " tokens, " +
-  unknowns.length.toString() + " unknown, " +
-  (tokens.length - unknowns.length).toString() + " known\n"
+  "Corpus: " + tokens.length.toString() + " tokens (" +
+  (tokens.length - unknowns.length).toString() + " Pass 1 vocab, " +
+  unknowns.length.toString() + " identifiers/literals for BPE)\n"
 );
 
 // --- Train BPE ---
@@ -66,6 +66,19 @@ Console.error("Learned " + merges.length.toString() + " merge rules\n");
 
 const output = serializeMerges(merges);
 writeOutput(output);
+
+// --- Build BPE vocab and write vocab.tsv ---
+
+buildBpeVocab(merges, getNextId());
+
+const vocabTsv = serializeVocab();
+const vocabFd = FileSystem.open("build/vocab.tsv", "w");
+if (vocabFd === null) {
+  Console.error("Error: could not open build/vocab.tsv for writing\n");
+  abort();
+}
+(vocabFd as Descriptor).writeString(vocabTsv);
+Console.error("Wrote build/vocab.tsv\n");
 
 // --- Helpers ---
 

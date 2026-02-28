@@ -6,7 +6,7 @@ import {
   bpeVocab, unkId,
   serializeMerges, parseMerges,
 } from "../src/bpe";
-import { initVocabulary, nextId } from "../src/vocabulary";
+import { initVocabulary, getNextId } from "../src/vocabulary";
 
 // ===== tokenToChars =====
 
@@ -160,7 +160,7 @@ test("buildBpeVocab sets unkId", () => {
 
 test("buildBpeVocab IDs start after vocabulary nextId", () => {
   initVocabulary();
-  const startId = nextId;
+  const startId = getNextId();
   const merges: Array<Array<string>> = [["A", "B"]];
   buildBpeVocab(merges, startId);
   // A and B are chars, AB is merged, <UNK> is last

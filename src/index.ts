@@ -2,13 +2,13 @@
 // Entry point that exercises the tokenizer pipeline.
 
 import { tokenize } from "./lexer";
-import { vocab, nextId, initVocabulary } from "./vocabulary";
+import { vocab, getNextId, initVocabulary } from "./vocabulary";
 import { buildBpeVocab, bpeEncodeToken, parseMerges, getBpeNextId } from "./bpe";
 
 initVocabulary();
 
 export function getVocabSize(): i32 {
-  return nextId;
+  return getNextId();
 }
 
 export function tokenizeWat(text: string): Array<string> {
@@ -24,7 +24,7 @@ export function lookupToken(token: string): i32 {
 
 export function loadMerges(mergesTsv: string): void {
   const merges = parseMerges(mergesTsv);
-  buildBpeVocab(merges, nextId);
+  buildBpeVocab(merges, getNextId());
 }
 
 export function encodeToken(token: string): Array<i32> {

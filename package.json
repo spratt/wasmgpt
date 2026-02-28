@@ -13,6 +13,8 @@
     "train:bpe": "npm run corpus && npm run build:train-bpe && wasmtime --dir . build/train-bpe.wasm build/wasmgpt.annotated.wat > build/merges.tsv",
     "build:train": "asc src/train.ts --outFile build/train.wasm --config node_modules/@assemblyscript/wasi-shim/asconfig.json --debug",
     "train": "npm run build:train && wasmtime --dir . build/train.wasm build/wasmgpt.annotated.wat build/merges.tsv",
+    "build:infer": "asc src/infer.ts --outFile build/infer.wasm --config node_modules/@assemblyscript/wasi-shim/asconfig.json --debug",
+    "infer": "npm run build:infer && wasmtime --dir . build/infer.wasm build/vocab.tsv",
     "test": "as-test"
   },
   "devDependencies": {

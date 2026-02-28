@@ -1,5 +1,5 @@
 import { test, expect } from "assemblyscript-unittest-framework/assembly";
-import { vocab, nextId, initVocabulary } from "../src/vocabulary";
+import { vocab, getNextId, initVocabulary } from "../src/vocabulary";
 
 // --- Initialization ---
 
@@ -8,9 +8,9 @@ test("initVocabulary populates vocab", () => {
   expect(vocab.size > 0).equal(true);
 });
 
-test("nextId equals vocab size", () => {
+test("getNextId() equals vocab size", () => {
   initVocabulary();
-  expect(nextId).equal(vocab.size);
+  expect(getNextId()).equal(vocab.size);
 });
 
 // --- Syntax tokens ---
@@ -158,7 +158,7 @@ test("no duplicate IDs", () => {
 
 // --- IDs are sequential from 0 ---
 
-test("IDs range from 0 to nextId-1", () => {
+test("IDs range from 0 to getNextId()-1", () => {
   initVocabulary();
   const keys = vocab.keys();
   let minId: i32 = i32.MAX_VALUE;
@@ -169,7 +169,7 @@ test("IDs range from 0 to nextId-1", () => {
     if (id > maxId) maxId = id;
   }
   expect(minId).equal(0);
-  expect(maxId).equal(nextId - 1);
+  expect(maxId).equal(getNextId() - 1);
 });
 
 // --- Idempotency ---
@@ -177,12 +177,12 @@ test("IDs range from 0 to nextId-1", () => {
 test("calling initVocabulary twice does not change IDs", () => {
   initVocabulary();
   const firstSize = vocab.size;
-  const firstNextId = nextId;
+  const firstNextId = getNextId();
   const addId = vocab.get("i32.add");
 
   initVocabulary();
   expect(vocab.size).equal(firstSize);
-  expect(nextId).equal(firstNextId);
+  expect(getNextId()).equal(firstNextId);
   expect(vocab.get("i32.add")).equal(addId);
 });
 

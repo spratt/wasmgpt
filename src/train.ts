@@ -6,7 +6,7 @@
 
 import { CommandLine, Console, FileSystem, Descriptor } from "as-wasi/assembly";
 import { tokenize } from "./lexer";
-import { vocab, nextId, initVocabulary } from "./vocabulary";
+import { vocab, getNextId, initVocabulary } from "./vocabulary";
 import { buildBpeVocab, bpeEncodeToken, parseMerges, getBpeNextId } from "./bpe";
 import {
   initModel, gpt, stateDict, params, vocabSize,
@@ -65,8 +65,9 @@ if (mergesText === null) {
   abort();
 }
 const merges = parseMerges(mergesText as string);
-buildBpeVocab(merges, nextId);
-Console.error("vocabulary: " + nextId.toString() + " pass1, " + getBpeNextId().toString() + " total\n");
+const pass1Size = getNextId();
+buildBpeVocab(merges, pass1Size);
+Console.error("vocabulary: " + pass1Size.toString() + " pass1, " + getBpeNextId().toString() + " total\n");
 
 // ===== Read and tokenize corpus =====
 

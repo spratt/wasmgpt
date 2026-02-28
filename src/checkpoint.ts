@@ -132,7 +132,7 @@ export function loadCheckpoint(
   if (savedEmbd != N_EMBD || savedLayer != N_LAYER ||
       savedHead != N_HEAD || savedBlock != BLOCK_SIZE ||
       savedVocab != vocabSize) {
-    return -1; // Config mismatch
+    return -2; // Config mismatch
   }
 
   // Read weights in sorted key order

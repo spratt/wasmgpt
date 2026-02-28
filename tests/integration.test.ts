@@ -1,5 +1,5 @@
 import { test, expect } from "assemblyscript-unittest-framework/assembly";
-import { initVocabulary, vocab, nextId } from "../src/vocabulary";
+import { initVocabulary, vocab, getNextId } from "../src/vocabulary";
 import { tokenize } from "../src/lexer";
 import { buildBpeVocab, bpeEncodeToken, getBpeNextId } from "../src/bpe";
 import {
@@ -32,13 +32,13 @@ test("integration: encode tokens to IDs", () => {
   // All IDs should be in valid range
   for (let i: i32 = 0; i < ids.length; i++) {
     expect(ids[i] >= 0).equal(true);
-    expect(ids[i] < nextId).equal(true);
+    expect(ids[i] < getNextId()).equal(true);
   }
 });
 
 test("integration: forward pass + crossEntropy produces finite loss", () => {
   initVocabulary();
-  const vs = nextId;
+  const vs = getNextId();
   initModel(vs);
 
   const tokens = tokenize(WAT_SNIPPET);
@@ -76,7 +76,7 @@ test("integration: forward pass + crossEntropy produces finite loss", () => {
 
 test("integration: backward produces non-zero gradients", () => {
   initVocabulary();
-  const vs = nextId;
+  const vs = getNextId();
   initModel(vs);
 
   const tokens = tokenize(WAT_SNIPPET);
@@ -125,7 +125,7 @@ test("integration: backward produces non-zero gradients", () => {
 
 test("integration: graph detached after backward", () => {
   initVocabulary();
-  const vs = nextId;
+  const vs = getNextId();
   initModel(vs);
 
   const tokens = tokenize(WAT_SNIPPET);

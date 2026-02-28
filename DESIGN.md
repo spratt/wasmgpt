@@ -31,7 +31,7 @@ The following components port with only surface-level changes (data types, synta
 
 - **GPT-2 model architecture** — consgpt.lisp implements a GPT-2 style transformer with RMSNorm, weight tying (`lm_head` shares weights with `wte`), multi-head self-attention with KV cache, and a ReLU MLP block. The architecture is identical for WasmGPT; only the vocabulary size changes.
 
-- **Scalar autograd** — differentiable operations (`vadd`, `vmul`, `vpow`, `vlog`, `vexp`, `vrelu`) with DFS topological sort backward pass. The autograd engine is domain-independent and ports directly.
+- **Autograd** — consgpt.lisp uses scalar autograd (`Val` per f32 value) with DFS topological sort backward pass. WasmGPT replaces this with tensor-based autograd (one `Tensor` per matrix/vector), but the backward algorithm is identical: topological sort, reverse walk, gradient accumulation, graph detachment.
 
 - **Adam optimizer** — with linear LR decay, bias correction, and per-parameter first/second moment tracking.
 
@@ -49,8 +49,9 @@ The following components port with only surface-level changes (data types, synta
 | Numeric precision | `double-float` (64-bit) | `f32` (32-bit) — matches WASM native type and WebGPU shader constraints |
 | Data structures | Hash tables, cons lists, defstruct | Maps, Arrays, classes with field initializers |
 | Runtime | SBCL native compilation, 16GB heap | WASM + WebGPU in the browser |
-| Checkpointing | S-expressions written with `*print-readably*` | TBD — likely ArrayBuffer or IndexedDB |
-| Memory management | SBCL GC with graph detachment after backward | Manual or GC depending on AS runtime; same detachment pattern |
+| Autograd | Scalar (`Val` per f32, millions of graph nodes) | Tensor (one `Tensor` per matrix, dozens of graph nodes) |
+| Checkpointing | S-expressions written with `*print-readably*` | Binary (raw `fd_write`/`fd_read` via WASI, `build/model.bin`) |
+| Memory management | SBCL GC with graph detachment after backward | AS GC with same detachment pattern |
 
 ### Lexer adaptation
 
@@ -79,6 +80,30 @@ All helper functions are top-level (no closures, per AssemblyScript constraints)
 
 consgpt.lisp's Tiny config (E=64, L=2, H=4, B=256, V=1,382) has 203K parameters and trains in ~10 minutes per 100 steps on CPU. WasmGPT's Pass 1 vocabulary is ~553 tokens (before BPE additions), smaller than consgpt.lisp's 1,016, further reducing embedding and output matrix dimensions. The same Tiny config is a reasonable starting point, with the option to scale up once the pipeline is validated.
 
+### Performance comparison
+
+WasmGPT uses tensor-based autograd instead of consgpt.lisp's scalar autograd. With scalar autograd, each `f32` value is a heap-allocated `Val` node, and a single matrix multiply creates thousands of graph nodes. With tensor autograd, each weight matrix is one `Tensor` backed by a contiguous `StaticArray<f32>`, and `matmul` creates one graph node. The forward pass graph has dozens of nodes instead of millions.
+
+**Training: 100 steps on CPU**
+
+| Implementation | Autograd | Model | Time |
+|---|---|---|---|
+| wasmgpt (wasmtime) | Tensor | 121K params, V=757 | **49s** |
+| consgpt.lisp (SBCL) | Scalar | 203K params, V=1,382 | ~600s |
+
+Even accounting for the smaller model (~0.6x the parameters), wasmgpt is roughly 7-8x faster. The speedup comes from eliminating graph overhead — millions of per-scalar heap allocations, children arrays, and local-gradient lists are replaced by a handful of tensor nodes with contiguous memory.
+
+For reference, the microgpt benchmarks (a minimal ~4.2K parameter model used during language selection) were:
+
+| Language | microgpt time |
+|---|---|
+| Common Lisp (SBCL) | 12s |
+| Python | 90s |
+| Clojure | 129s |
+| R7RS Scheme (CHICKEN) | 170s |
+
+wasmgpt trains a 29x larger model in only 4x the time of SBCL's microgpt.
+
 ---
 
 ## Architecture
@@ -89,12 +114,150 @@ The model follows the GPT-2 architecture as implemented in [consgpt.lisp](https:
 - RMSNorm (not LayerNorm) — simpler and sufficient at small scale
 - Weight tying between token embedding and output projection
 - ReLU activation in the MLP block
-- Scalar autograd engine (no framework dependency)
+- Tensor autograd engine (no framework dependency)
 - Adam optimizer with linear LR decay and bias correction
-- Cross-entropy loss
+- Cross-entropy loss (fused softmax + NLL for numerical stability)
 - Training loop with checkpointing, inference loop with temperature sampling
 
 Training targets browser deployment from the outset. The inference path uses WebGPU for matrix operations and WASM for CPU-side orchestration (autograd, Adam, tokenizer, training loop).
+
+### Tensor autograd (`src/tensor.ts`)
+
+WasmGPT uses tensor-based autograd instead of consgpt.lisp's scalar autograd. Each weight matrix is a single `Tensor` object backed by a contiguous `StaticArray<f32>`, so the computation graph has one node per operation instead of one node per scalar. This prepares for future WebGPU acceleration: `StaticArray<f32>` maps directly to GPU buffer uploads, and tensor operations can be swapped for compute shader dispatches without structural changes.
+
+| Scalar (consgpt.lisp) | Tensor (wasmgpt) |
+|---|---|
+| `Val` per f32 value | `Tensor` per matrix/vector |
+| `localGrads: Array<f32>` per node | `op: i32` enum + dispatch function |
+| `vadd(a, b)` creates 1 node for 1 scalar | `add(a, b)` creates 1 node for N elements |
+| `linear(x, w)` = m*n vmul + m vsum nodes | `matmul(w, x)` = 1 node |
+| Millions of nodes per forward pass | Dozens of nodes per forward pass |
+
+**Tensor class:**
+
+```
+class Tensor {
+  data: StaticArray<f32>;      // contiguous storage, row-major
+  grad: StaticArray<f32>;      // same size as data, accumulated during backward
+  shape: StaticArray<i32>;     // [rows, cols] for 2D, [len] for 1D, [] for scalar
+  children: Array<Tensor>;     // input tensors (empty array for leaves)
+  op: i32;                     // which operation produced this tensor
+  scalarArg: f32;              // auxiliary scalar (for MUL_SCALAR, DIV_SCALAR, RMSNORM eps)
+  intArg: i32;                 // auxiliary int (for EMBEDDING row index, SLICE start)
+  intArg2: i32;                // auxiliary int (for SLICE end)
+  cacheData: StaticArray<f32>; // auxiliary storage (cross-entropy stores softmax probs here)
+}
+```
+
+AssemblyScript has no closures, so we cannot store a backward function on each node (as PyTorch does). Instead, each Tensor stores an `op: i32` enum value (17 ops total), and `backward()` dispatches on it:
+
+| Op | Forward | Backward (given output grad `g`) |
+|---|---|---|
+| `MATMUL` | `C = A @ B` (A is [m,k], B is [k,1]) | `A.grad += g @ B^T`, `B.grad += A^T @ g` |
+| `ADD` | `C = A + B` elementwise | `A.grad += g`, `B.grad += g` |
+| `RELU` | `C[i] = max(0, A[i])` | `A.grad[i] += g[i] * (A.data[i] > 0 ? 1 : 0)` |
+| `SOFTMAX` | `C = softmax(A)` | `A.grad[i] += C.data[i] * (g[i] - dot(g, C.data))` |
+| `RMSNORM` | `C = x / rms(x)` | Chain rule through normalization |
+| `LOG` | `C[i] = log(A[i])` | `A.grad[i] += g[i] / A.data[i]` |
+| `NEG` | `C[i] = -A[i]` | `A.grad[i] += -g[i]` |
+| `EMBEDDING` | `C = table[id]` (row lookup) | `table.grad[id*cols..(id+1)*cols] += g` |
+| `SUM` | `C = sum(A)` (scalar output) | `A.grad[i] += g[0]` for all i |
+| `MUL_SCALAR` | `C[i] = A[i] * s` | `A.grad[i] += g[i] * s` |
+| `DIV_SCALAR` | `C[i] = A[i] / s` | `A.grad[i] += g[i] / s` |
+| `SLICE` | `C = A[start..end]` | `A.grad[start+i] += g[i]` |
+| `CONCAT` | `C = [A₀; A₁; ...; Aₙ]` | `Aₕ.grad += g[hStart..hEnd]` for each part |
+| `MUL` | `C[i] = A[i] * B[i]` | `A.grad[i] += g[i] * B.data[i]`, `B.grad[i] += g[i] * A.data[i]` |
+| `CROSS_ENTROPY` | `C = -log(softmax(A)[target])` | `A.grad[i] += g[0] * (probs[i] - (i == target ? 1 : 0))`, probs from `cacheData` |
+| `SCALE` | `C[i] = A[i] * B.data[0]` (vec * scalar) | `A.grad[i] += g[i] * B.data[0]`, `B.grad[0] += sum(g[i] * A.data[i])` |
+
+**`backward(loss)`** follows the same algorithm as consgpt.lisp's scalar version:
+1. Iterative DFS topological sort (using `Set<usize>` for visited tracking)
+2. Set `loss.grad[0] = 1.0`
+3. Reverse walk: dispatch on `op` to accumulate gradients into children
+4. Detach graph: clear `children` on all nodes for GC
+
+### GPT-2 model (`src/model.ts`)
+
+**Hyperparameters** (same as consgpt.lisp Tiny config):
+- `N_EMBD = 64`, `N_LAYER = 2`, `N_HEAD = 4`, `HEAD_DIM = 16`, `BLOCK_SIZE = 256`
+
+**PRNG:** Same LCG as consgpt.lisp — `state = (1664525 * state + 1013904223) & 0xFFFFFFFF`, seeded at 42. Box-Muller transform for Gaussian initialization.
+
+**Weight initialization:** `makeMatrix(nout, nin)` creates a [nout, nin] Tensor filled with Gaussian * 0.02.
+
+**State dictionary:** `stateDict: Map<string, Tensor>` with 14 weight tensors:
+- `wte`: [vocabSize, nEmbd], `wpe`: [blockSize, nEmbd]
+- Per layer (2 layers): `attn_wq`, `attn_wk`, `attn_wv`, `attn_wo` (all [nEmbd, nEmbd]), `mlp_fc1` ([4\*nEmbd, nEmbd]), `mlp_fc2` ([nEmbd, 4\*nEmbd])
+- Weight tying: `wte` reused for output projection (no separate `lm_head`)
+
+**Forward pass** (`gpt(tokenId, posId, cacheKeys, cacheVals) → logits`):
+
+```
+x = add(embedding(wte, tokenId), embedding(wpe, posId))
+x = rmsnorm(x, 1e-5)
+
+for each layer:
+  // Multi-head attention with KV cache
+  q, k, v = matmul(wq/wk/wv, rmsnorm(x))
+  cache k, v
+  for each head:
+    scores = softmax(concat([dot(qH, kH) / sqrt(headDim) for each cached position]))
+    headOut = weighted sum of cached values using scale(vH, attnWeight)
+  x = add(matmul(wo, concat(headOuts)), residual)
+
+  // MLP
+  x = add(matmul(fc2, relu(matmul(fc1, rmsnorm(x)))), residual)
+
+logits = matmul(wte, x)    // weight tying
+```
+
+The attention weighted sum uses `OP_SCALE` (vector * scalar tensor) instead of `mulScalar` (vector * raw f32) to maintain gradient flow through softmax. Dot products use `tensorSum(mul(qH, kH))`.
+
+### Training pipeline (`src/train.ts`)
+
+WASI CLI program: `wasmtime --dir . build/train.wasm <corpus.wat> <merges.tsv> [numSteps]`
+
+**Data loading:** initVocabulary → parseMerges → buildBpeVocab → tokenize corpus → encode tokens to IDs via vocab lookup (Pass 1) or bpeEncodeToken (Pass 2).
+
+**Training configuration** (same as consgpt.lisp):
+- `TRAIN_SEQ_LEN = 32`, `LEARNING_RATE = 0.001`, `BETA1 = 0.9`, `BETA2 = 0.999`, `EPS_ADAM = 1e-8`, `CHECKPOINT_INTERVAL = 10`
+
+**Adam optimizer:** Per-tensor `Map<string, StaticArray<f32>>` for first moment (m) and second moment (v). Linear LR decay relative to current run. Bias correction uses absolute step count. Gradients zeroed after update.
+
+**Batch extraction:** `getBatch(step)` returns a contiguous window of `TRAIN_SEQ_LEN + 1` IDs. Start index: `(step * TRAIN_SEQ_LEN) % max(1, corpusLen - TRAIN_SEQ_LEN - 1)`.
+
+**Cross-entropy loss:** Fused `OP_CROSS_ENTROPY` (softmax + NLL in one op) stores softmax probabilities in `cacheData` for backward. More numerically stable and efficient than the composed version `neg(logOp(slice(softmax(logits), target, target+1)))`.
+
+### Checkpoint persistence (`src/checkpoint.ts`)
+
+Binary format (`build/model.bin`) — compact, natural for WASM, trivial to read/write via linear memory:
+
+```
+[i32]  step number
+[i32]  nEmbd
+[i32]  nLayer
+[i32]  nHead
+[i32]  blockSize
+[i32]  vocabSize
+[f32 x N]  weight values (all tensors in sorted key order, row-major)
+[f32 x N]  Adam first moment (m) — same order
+[f32 x N]  Adam second moment (v) — same order
+```
+
+Uses raw WASI `fd_write`/`fd_read` with `changetype<usize>(staticArray)` for zero-copy binary I/O. On load, hyperparameters are validated against the current model config. The file is overwritten on each save.
+
+### Module dependency order
+
+```
+lexer.ts
+  └─ vocabulary.ts
+  └─ bpe.ts
+  └─ train-bpe.ts
+tensor.ts (independent)
+model.ts (depends on tensor)
+checkpoint.ts (depends on model)
+train.ts (depends on all above)
+```
 
 ---
 
@@ -281,12 +444,40 @@ The browser deployment target opens the possibility of distributed federated tra
 | Template project | [consgpt.lisp](https://github.com/spratt/consgpt.lisp) | Proven GPT on S-expression language; hybrid tokenizer, autograd, model, training loop all port directly |
 | Model architecture | GPT-2 style transformer with RMSNorm and weight tying | Proven in consgpt.lisp at small scale (203K params, Tiny config) |
 | Implementation language | AssemblyScript | Readable WAT output, name preservation, source map support |
+| Autograd | Tensor-based (op enum dispatch) | 7-8x faster than scalar autograd; `StaticArray<f32>` maps directly to GPU buffers for future WebGPU |
 | Tokenizer | Two-pass hybrid (instruction tokens + BPE) | Same design as consgpt.lisp; exploits known WASM structure; BPE handles open-ended values |
 | Corpus annotation | Source-map-based comment transplantation via [watnot](https://github.com/spratt/watnot) | Human-authored intent without synthetic generation |
 | Deployment | Browser (WASM + WebGPU) | Aligns with domain; no server infrastructure required |
 | Training trigger | WAT code completion | Keeps model simple; natural language deferred to fine-tuning phase |
 | BPE merge persistence | TSV (tab-separated, one merge per line) | Simple to parse in AS, human-readable, no JSON parser needed |
+| Checkpoint format | Binary (raw WASI fd_write/fd_read) | Zero-copy I/O via `changetype<usize>(staticArray)`; compact and natural for WASM |
 | Self-reference | Project source in corpus | Elegant bootstrapping; increases corpus coverage of idiomatic WAT |
+
+---
+
+## AssemblyScript Constraints
+
+Key constraints encountered during implementation:
+
+- **No closures** — all functions must be top-level or class methods. This is why tensor autograd uses op enum dispatch instead of stored backward functions (as PyTorch does).
+- **No `for..of`** — use index-based loops.
+- **Field initializers required** on classes.
+- **Sort comparators** must be top-level functions.
+- **`<` after `.get()`** is interpreted as a generic type parameter — store `.get()` result in a local variable first.
+- **`f32` arithmetic** may need explicit `f32()` casts to avoid implicit promotion to f64.
+- **`Map` keys** must be value types or strings — no object keys.
+- **`StaticArray<f32>`** for contiguous tensor storage (not `Array<f32>` — StaticArray has fixed size and no indirection, maps cleanly to linear memory and future GPU buffers).
+- **`Mathf.*`** for f32 math (`Mathf.log`, `Mathf.exp`, `Mathf.sqrt`, `Mathf.pow`, `Mathf.max`, `Mathf.abs`), not `Math.*` which returns f64.
+- **Iterative DFS** for topological sort — recursive DFS may hit stack limits on deep graphs.
+- **`Set<usize>`** works for visited tracking — `changetype<usize>(tensor)` gives the unique object address.
+- **`changetype<usize>(staticArray)`** gives the memory address of a StaticArray's data — used for efficient binary I/O in checkpoint persistence.
+
+### Implementation lessons
+
+- The **`crossEntropy` cacheData pattern** — storing softmax probabilities in `cacheData` during forward for use in backward — works well as a closure substitute. Reusable for any op that needs intermediate results during backward.
+- The **op enum dispatch pattern** is clean and extensible: adding a new op requires (1) a constant, (2) a forward function, (3) a backward case in `backwardOp`.
+- **`rmsnorm` backward** has a non-trivial chain rule. The clean formula is `a.grad[i] += rmsScale * (g[i] - t.data[i] * dotGOut / n)`.
+- **`concat` backward** must index into the output grad with offset (`g[offset + j]`) but into each child's grad from 0 (`child.grad[j]`).
 
 ---
 

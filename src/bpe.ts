@@ -2,10 +2,10 @@
 // Learns subword merges for tokens not in the Pass 1 vocabulary.
 // Ported from consgpt.lisp's bpe.lisp.
 
-import { nextId } from "./vocabulary";
+import { vocab, getNextId } from "./vocabulary";
 
-// Re-export nextId so we can update it from here
-export { nextId };
+// Re-export getNextId so callers can access it
+export { getNextId };
 
 // ===== State =====
 
@@ -208,8 +208,13 @@ export function buildBpeVocab(merges: Array<Array<string>>, startId: i32): void 
   for (let i = 0; i < merges.length; i++) {
     const merged = merges[i][0] + merges[i][1];
     if (!bpeVocab.has(merged)) {
-      bpeVocab.set(merged, bpeNextId);
-      bpeNextId++;
+      if (vocab.has(merged)) {
+        // Reuse Pass 1 ID for merged symbols that match known tokens
+        bpeVocab.set(merged, vocab.get(merged));
+      } else {
+        bpeVocab.set(merged, bpeNextId);
+        bpeNextId++;
+      }
     }
   }
 
@@ -229,6 +234,22 @@ export function serializeMerges(merges: Array<Array<string>>): string {
   let result = "";
   for (let i = 0; i < merges.length; i++) {
     result += merges[i][0] + "\t" + merges[i][1] + "\n";
+  }
+  return result;
+}
+
+export function serializeVocab(): string {
+  let result = "";
+  const keys = vocab.keys();
+  for (let i = 0; i < keys.length; i++) {
+    const token = keys[i];
+    result += vocab.get(token).toString() + "\t" + token + "\n";
+  }
+  const bpeKeys = bpeVocab.keys();
+  for (let i = 0; i < bpeKeys.length; i++) {
+    const token = bpeKeys[i];
+    if (vocab.has(token)) continue; // already in Pass 1
+    result += bpeVocab.get(token).toString() + "\t" + token + "\n";
   }
   return result;
 }

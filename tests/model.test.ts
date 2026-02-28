@@ -2,7 +2,7 @@ import { test, expect } from "assemblyscript-unittest-framework/assembly";
 import {
   initModel, stateDict, params, numParams, vocabSize, gpt,
   N_EMBD, N_LAYER, N_HEAD, HEAD_DIM, BLOCK_SIZE,
-  lcgState, randomGaussian,
+  lcgState, randomGaussian, weightedChoice, detachKvCache,
 } from "../src/model";
 import { Tensor } from "../src/tensor";
 
@@ -160,4 +160,52 @@ test("gpt KV cache grows with sequence", () => {
   gpt(1, 1, cacheKeys, cacheVals);
   expect(cacheKeys[0].length).equal(2);
   expect(cacheVals[0].length).equal(2);
+});
+
+// ===== weightedChoice =====
+
+test("weightedChoice returns valid index", () => {
+  const probs = new StaticArray<f32>(5);
+  for (let i: i32 = 0; i < 5; i++) {
+    probs[i] = f32(0.2);
+  }
+  for (let trial: i32 = 0; trial < 50; trial++) {
+    const idx = weightedChoice(probs);
+    expect(idx >= 0).equal(true);
+    expect(idx < 5).equal(true);
+  }
+});
+
+test("weightedChoice selects one-hot correctly", () => {
+  const probs = new StaticArray<f32>(4);
+  probs[0] = f32(0.0);
+  probs[1] = f32(0.0);
+  probs[2] = f32(1.0);
+  probs[3] = f32(0.0);
+  for (let trial: i32 = 0; trial < 20; trial++) {
+    expect(weightedChoice(probs)).equal(2);
+  }
+});
+
+// ===== detachKvCache =====
+
+test("detachKvCache clears children on cached tensors", () => {
+  initModel(50);
+  const cacheKeys = new Array<Array<Tensor>>(N_LAYER);
+  const cacheVals = new Array<Array<Tensor>>(N_LAYER);
+  for (let li: i32 = 0; li < N_LAYER; li++) {
+    cacheKeys[li] = new Array<Tensor>();
+    cacheVals[li] = new Array<Tensor>();
+  }
+  gpt(0, 0, cacheKeys, cacheVals);
+  // Before detach, cached tensors have children from computation graph
+  expect(cacheKeys[0][0].children.length > 0).equal(true);
+  detachKvCache(cacheKeys, cacheVals);
+  // After detach, all children cleared
+  for (let li: i32 = 0; li < N_LAYER; li++) {
+    for (let ti: i32 = 0; ti < cacheKeys[li].length; ti++) {
+      expect(cacheKeys[li][ti].children.length).equal(0);
+      expect(cacheVals[li][ti].children.length).equal(0);
+    }
+  }
 });

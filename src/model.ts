@@ -20,6 +20,16 @@ export function randomUniform(): f32 {
   return f32(lcgNext()) / f32(4294967296.0);
 }
 
+export function weightedChoice(probs: StaticArray<f32>): i32 {
+  const threshold = randomUniform();
+  let acc: f32 = 0.0;
+  for (let i: i32 = 0; i < probs.length; i++) {
+    acc += probs[i];
+    if (acc >= threshold) return i;
+  }
+  return probs.length - 1;
+}
+
 export function randomGaussian(): f32 {
   const u1 = Mathf.max(randomUniform(), f32(1e-10));
   const u2 = randomUniform();
@@ -178,4 +188,20 @@ export function gpt(
 
   // Output projection: weight tying with wte
   return matmul(wte, x);
+}
+
+export function detachKvCache(
+  cacheKeys: Array<Array<Tensor>>,
+  cacheVals: Array<Array<Tensor>>
+): void {
+  for (let li: i32 = 0; li < cacheKeys.length; li++) {
+    const ks = cacheKeys[li];
+    for (let ti: i32 = 0; ti < ks.length; ti++) {
+      ks[ti].children = new Array<Tensor>(0);
+    }
+    const vs = cacheVals[li];
+    for (let ti: i32 = 0; ti < vs.length; ti++) {
+      vs[ti].children = new Array<Tensor>(0);
+    }
+  }
 }
