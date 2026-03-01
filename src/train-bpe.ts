@@ -1,64 +1,82 @@
-// train-bpe: Train BPE merge rules on a WAT corpus.
-// Reads a WAT file, tokenizes it, partitions tokens into known (Pass 1)
-// and unknown, trains BPE on the unknowns, and writes merge rules as S-expressions.
+// train-bpe: Train BPE merge rules on WAT corpus files.
+// Reads one or more WAT files, tokenizes them, partitions tokens into known
+// (Pass 1) and unknown, trains BPE on the unknowns, and writes merge rules
+// and vocabulary as S-expressions.
 //
 // Usage:
-//   wasmtime --dir . build/train-bpe.wasm <corpus.wat> [numMerges]
+//   wasmtime --dir . build/train-bpe.wasm <corpus1.wat> [corpus2.wat] ...
 
 import { CommandLine, Console, FileSystem, Descriptor } from "as-wasi/assembly";
 import { readFileText } from "./io";
 import { tokenize } from "./lexer";
 import { vocab, getNextId, initVocabulary } from "./vocabulary";
 import { trainBpe, serializeMerges, buildBpeVocab, serializeVocab, tokenToChars } from "./bpe";
+import { parseConfig, configI32 } from "./config";
 
 // --- Parse CLI args ---
 
 const args = CommandLine.all;
 
 if (args.length < 2) {
-  Console.error("Usage: train-bpe <corpus.wat> [numMerges]\n");
+  Console.error("Usage: train-bpe <corpus1.wat> [corpus2.wat] ...\n");
   abort();
 }
 
-const corpusPath = args[1];
-let numMerges: i32 = 256;
-if (args.length >= 3) {
-  numMerges = I32.parseInt(args[2]);
-}
+// --- Load configuration ---
 
-// --- Read corpus ---
-
-const fd = FileSystem.open(corpusPath, "r");
-if (fd === null) {
-  Console.error("Error: could not open file: " + corpusPath + "\n");
+const configFd = FileSystem.open("config.sexp", "r");
+if (configFd === null) {
+  Console.error("Error: could not open config.sexp\n");
   abort();
 }
-const watText = readFileText(fd as Descriptor);
-if (watText === null) {
-  Console.error("Error: could not read file: " + corpusPath + "\n");
+const configText = readFileText(configFd as Descriptor);
+if (configText === null) {
+  Console.error("Error: could not read config.sexp\n");
   abort();
 }
+const config = parseConfig(configText as string);
 
-// --- Tokenize and partition ---
+// --- Tokenize and partition all corpus files ---
 
 initVocabulary();
-const tokens = tokenize(watText as string);
 
+let totalTokens: i32 = 0;
 const unknowns = new Array<string>();
-for (let i = 0; i < tokens.length; i++) {
-  if (!vocab.has(tokens[i])) {
-    unknowns.push(tokens[i]);
+
+for (let a: i32 = 1; a < args.length; a++) {
+  const corpusPath = args[a];
+  const fd = FileSystem.open(corpusPath, "r");
+  if (fd === null) {
+    Console.error("Error: could not open file: " + corpusPath + "\n");
+    abort();
   }
+  const watText = readFileText(fd as Descriptor);
+  if (watText === null) {
+    Console.error("Error: could not read file: " + corpusPath + "\n");
+    abort();
+  }
+
+  const tokens = tokenize(watText as string);
+  totalTokens += tokens.length;
+
+  for (let i: i32 = 0; i < tokens.length; i++) {
+    if (!vocab.has(tokens[i])) {
+      unknowns.push(tokens[i]);
+    }
+  }
+
+  Console.error(corpusPath + ": " + tokens.length.toString() + " tokens\n");
 }
 
 Console.error(
-  "Corpus: " + tokens.length.toString() + " tokens (" +
-  (tokens.length - unknowns.length).toString() + " Pass 1 vocab, " +
+  "Total: " + totalTokens.toString() + " tokens (" +
+  (totalTokens - unknowns.length).toString() + " Pass 1 vocab, " +
   unknowns.length.toString() + " identifiers/literals for BPE)\n"
 );
 
 // --- Train BPE ---
 
+const numMerges: i32 = configI32(config, "num-merges", 256);
 const merges = trainBpe(unknowns, numMerges);
 
 Console.error("Learned " + merges.length.toString() + " merge rules\n");

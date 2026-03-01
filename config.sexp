@@ -21,6 +21,13 @@
   ;; GPT-2 uses 1024.
   (block-size 256)
 
+  ;;; Tokenizer
+
+  ;; Maximum number of BPE merge rules to learn from the corpus.
+  ;; More merges = larger vocabulary = each token carries more meaning.
+  ;; GPT-2 uses ~50,000 merges for a 50,257-token vocabulary.
+  (num-merges 256)
+
   ;;; Training
 
   ;; Number of tokens per training sequence. Should not exceed block-size.

@@ -2,7 +2,7 @@
 // WASI CLI entry point.
 //
 // Usage:
-//   wasmtime --dir . build/train.wasm <corpus.wat> <merges.sexp> [numSteps]
+//   wasmtime --dir . build/train.wasm <merges.sexp> <corpus1.wat> [corpus2.wat] ... [numSteps]
 
 import { CommandLine, Console, FileSystem, Descriptor } from "as-wasi/assembly";
 import { readFileText } from "./io";
@@ -22,15 +22,33 @@ import { parseConfig, configI32, configF32 } from "./config";
 const args = CommandLine.all;
 
 if (args.length < 3) {
-  Console.error("Usage: train <corpus.wat> <merges.sexp> [numSteps]\n");
+  Console.error("Usage: train <merges.sexp> <corpus1.wat> [corpus2.wat] ... [numSteps]\n");
   abort();
 }
 
-const corpusPath = args[1];
-const mergesPath = args[2];
+const mergesPath = args[1];
+
+// Collect corpus paths and optional numSteps from remaining args.
+// If the last arg parses as a positive integer, treat it as numSteps.
+const corpusPaths = new Array<string>();
 let numSteps: i32 = 100;
-if (args.length >= 4) {
-  numSteps = I32.parseInt(args[3]);
+let lastArg = args[args.length - 1];
+let lastArgIsSteps = false;
+if (args.length > 3) {
+  const parsed = I32.parseInt(lastArg);
+  if (parsed > 0 && parsed.toString() == lastArg) {
+    numSteps = parsed;
+    lastArgIsSteps = true;
+  }
+}
+const corpusEnd = lastArgIsSteps ? args.length - 1 : args.length;
+for (let i: i32 = 2; i < corpusEnd; i++) {
+  corpusPaths.push(args[i]);
+}
+
+if (corpusPaths.length == 0) {
+  Console.error("Error: no corpus files specified\n");
+  abort();
 }
 
 // ===== Load configuration =====
@@ -92,58 +110,71 @@ if (mergesText === null) {
 const merges = parseMerges(mergesText as string);
 const pass1Size = getNextId();
 
-// ===== Read and tokenize corpus =====
+// ===== Read and tokenize all corpus files =====
 
-const corpusFd = FileSystem.open(corpusPath, "r");
-if (corpusFd === null) {
-  Console.error("Error: could not open corpus: " + corpusPath + "\n");
-  abort();
-}
-const corpusText = readFileText(corpusFd as Descriptor);
-if (corpusText === null) {
-  Console.error("Error: could not read corpus: " + corpusPath + "\n");
-  abort();
-}
-
-const tokens = tokenize(corpusText as string);
-Console.error("corpus: " + tokens.length.toString() + " tokens\n");
-
-// Collect all unique characters from unknown tokens so every character
-// gets a BPE ID, even if it never participated in a merge rule.
+// First pass: tokenize all files and collect unique chars for BPE vocab
+const allTokens = new Array<Array<string>>();
 const corpusChars = new Array<string>();
 const charSeen = new Map<string, bool>();
-for (let i: i32 = 0; i < tokens.length; i++) {
-  if (!vocab.has(tokens[i])) {
-    const chars = tokenToChars(tokens[i]);
-    for (let j: i32 = 0; j < chars.length; j++) {
-      if (!charSeen.has(chars[j])) {
-        charSeen.set(chars[j], true);
-        corpusChars.push(chars[j]);
+let totalTokens: i32 = 0;
+
+for (let fi: i32 = 0; fi < corpusPaths.length; fi++) {
+  const corpusPath = corpusPaths[fi];
+  const corpusFd = FileSystem.open(corpusPath, "r");
+  if (corpusFd === null) {
+    Console.error("Error: could not open corpus: " + corpusPath + "\n");
+    abort();
+  }
+  const corpusText = readFileText(corpusFd as Descriptor);
+  if (corpusText === null) {
+    Console.error("Error: could not read corpus: " + corpusPath + "\n");
+    abort();
+  }
+
+  const tokens = tokenize(corpusText as string);
+  allTokens.push(tokens);
+  totalTokens += tokens.length;
+  Console.error(corpusPath + ": " + tokens.length.toString() + " tokens\n");
+
+  for (let i: i32 = 0; i < tokens.length; i++) {
+    if (!vocab.has(tokens[i])) {
+      const chars = tokenToChars(tokens[i]);
+      for (let j: i32 = 0; j < chars.length; j++) {
+        if (!charSeen.has(chars[j])) {
+          charSeen.set(chars[j], true);
+          corpusChars.push(chars[j]);
+        }
       }
     }
   }
 }
 
+Console.error("corpus: " + totalTokens.toString() + " tokens across " + corpusPaths.length.toString() + " files\n");
+
 buildBpeVocab(merges, pass1Size, corpusChars);
 Console.error("vocabulary: " + pass1Size.toString() + " pass1, " + getBpeNextId().toString() + " total\n");
 
-// Encode tokens to IDs
+// Second pass: encode all tokens to IDs, wrapping each file with BOS
+const bosId = getBosId();
 const allIds = new Array<i32>();
-for (let i: i32 = 0; i < tokens.length; i++) {
-  const tok = tokens[i];
-  if (vocab.has(tok)) {
-    allIds.push(vocab.get(tok));
-  } else {
-    const bpeIds = bpeEncodeToken(tok);
-    for (let j: i32 = 0; j < bpeIds.length; j++) {
-      allIds.push(bpeIds[j]);
+
+for (let fi: i32 = 0; fi < allTokens.length; fi++) {
+  const tokens = allTokens[fi];
+  allIds.push(bosId);
+  for (let i: i32 = 0; i < tokens.length; i++) {
+    const tok = tokens[i];
+    if (vocab.has(tok)) {
+      allIds.push(vocab.get(tok));
+    } else {
+      const bpeIds = bpeEncodeToken(tok);
+      for (let j: i32 = 0; j < bpeIds.length; j++) {
+        allIds.push(bpeIds[j]);
+      }
     }
   }
+  allIds.push(bosId);
 }
-// Wrap corpus with BOS (following microgpt.py)
-const bosId = getBosId();
-allIds.unshift(bosId);
-allIds.push(bosId);
+
 Console.error("encoded: " + allIds.length.toString() + " token IDs (including BOS)\n");
 
 // ===== Initialize model =====
