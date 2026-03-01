@@ -40,28 +40,49 @@ npm install
 npm run setup:watnot
 ```
 
-## Build
-
-```
-npm run build
-```
-
 ## Test
 
 ```
 npm test
 ```
 
+## Usage
+
+Train from scratch:
+
+```
+npm run train:bpe      # build corpus, train BPE tokenizer
+npm run train          # train the model (default 100 steps)
+npm run infer          # generate WAT samples
+```
+
+Resume training or retrain after config changes:
+
+```
+npm run clean:model    # delete checkpoint only
+npm run clean          # delete all generated files
+npm run rebuild        # clean + train:bpe + train + infer
+```
+
+Hyperparameters are configured in `config.sexp`.
+
 ## Scripts
 
 | Script | Description |
 |---|---|
 | `build:tokenize` | Compile `src/tokenize.ts` to `build/tokenize.wasm` (debug + source map) |
-| `build:tokenize:release` | Compile with optimizations |
 | `build:train-bpe` | Compile `src/train-bpe.ts` to `build/train-bpe.wasm` |
+| `build:train` | Compile `src/train.ts` to `build/train.wasm` |
+| `build:infer` | Compile `src/infer.ts` to `build/infer.wasm` |
 | `setup:watnot` | Install and build the watnot submodule |
 | `corpus` | Build, disassemble, and annotate all entry points |
+| `corpus:watnot` | Build, disassemble, and annotate watnot |
 | `train:bpe` | Full pipeline: corpus + train BPE merge rules |
+| `train` | Build and train the model on all corpus files |
+| `infer` | Build and run inference from checkpoint |
+| `clean` | Delete all generated files (merges, vocab, model, WAT artifacts) |
+| `clean:model` | Delete only the model checkpoint |
+| `rebuild` | Clean + train:bpe + train + infer |
 | `test` | Run unit tests |
 
 ## Design

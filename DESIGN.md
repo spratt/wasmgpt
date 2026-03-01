@@ -303,9 +303,9 @@ Uses raw WASI `fd_write`/`fd_read` with `changetype<usize>(staticArray)` for zer
 
 ### Configuration (`config.sexp`, `src/config.ts`)
 
-All tunable hyperparameters are stored in `config.sexp`, an S-expression file in the project root. Both `train.ts` and `infer.ts` load it at startup via `parseConfig()`, which reuses the existing WAT lexer to tokenize the file and extracts `(key value)` pairs into a `Map<string, f64>`. Typed accessors `configI32()` and `configF32()` retrieve values with fallback defaults.
+All tunable hyperparameters are stored in `config.sexp`, an S-expression file in the project root. All three WASI entry points (`train-bpe.ts`, `train.ts`, `infer.ts`) load it at startup via `parseConfig()`, which reuses the existing WAT lexer to tokenize the file and extracts `(key value)` pairs into a `Map<string, f64>`. Typed accessors `configI32()` and `configF32()` retrieve values with fallback defaults.
 
-Parameters include model architecture (n-embd, n-layer, n-head, block-size, init-scale), training (train-seq-len, learning-rate, beta1, beta2, eps-adam, checkpoint-interval), and inference (temperature). Each parameter in the file has a comment explaining its purpose and the corresponding GPT-2 value for reference.
+Parameters include model architecture (n-embd, n-layer, n-head, block-size, init-scale), tokenizer (num-merges), training (train-seq-len, learning-rate, beta1, beta2, eps-adam, checkpoint-interval), and inference (temperature). Each parameter in the file has a comment explaining its purpose and the corresponding GPT-2 value for reference.
 
 The model's default hyperparameters (in `model.ts`) serve as the single source of truth for fallback values — `train.ts` and `infer.ts` pass getter results (e.g. `getNEmbd()`) as defaults to `configI32()`/`configF32()`, avoiding hardcoded literals in multiple places.
 
@@ -318,7 +318,7 @@ lexer.ts
   └─ config.ts (imports lexer for S-expression parsing)
   └─ tokenize.ts (browser-facing tokenizer library)
   └─ train-bpe.ts
-io.ts (safe file reading, bypasses as-wasi readString bug)
+io.ts (file reading via fd_read + String.UTF8.decodeUnsafe)
 tensor.ts (independent)
 model.ts (depends on tensor)
 checkpoint.ts (depends on model)
@@ -372,7 +372,7 @@ A hybrid tokenizer handles both classes, following the same two-pass design as [
 
    **Encoding:** `bpeEncodeToken(token)` splits the token into characters, applies all learned merges via `applyMerges()`, then maps each resulting subword to its integer ID. Unknown subwords fall back to `<UNK>`.
 
-   **Vocabulary building:** `buildBpeVocab(merges, startId)` assigns IDs starting from Pass 1's `nextId`, registering single characters (sorted) first, then merged symbols in merge order, then `<UNK>` as the final token.
+   **Vocabulary building:** `buildBpeVocab(merges, startId, corpusChars)` assigns IDs starting from Pass 1's `nextId`, registering single characters (sorted, from both merge rules and `corpusChars`) first, then merged symbols in merge order, then `<UNK>` as the final token. The `corpusChars` parameter ensures every character seen in the corpus gets a BPE ID, even if it never participated in a merge rule.
 
    **Key encoding:** Since AssemblyScript Maps require string keys, word arrays are encoded as `\x01`-separated strings and pair keys use `\0` as the separator (`left + "\0" + right`).
 
@@ -558,7 +558,7 @@ Key constraints encountered during implementation:
 - **`rmsnorm` backward** has a non-trivial chain rule. The clean formula is `a.grad[i] += rmsScale * (g[i] - t.data[i] * dotGOut / n)`.
 - **`concat` backward** must index into the output grad with offset (`g[offset + j]`) but into each child's grad from 0 (`child.grad[j]`).
 - **`export let` is not a live binding** — `export let nextId` in vocabulary.ts was imported by other modules, but AssemblyScript captures the value at import time (unlike ES module live bindings). After `initVocabulary()` set `nextId = 568`, importers still saw 0. Fixed by replacing with a `getNextId()` getter function.
-- **as-wasi `readString()` / `readAll()` corrupts large files** — both use `memory.data()` for iov and read_ptr buffers. These are static memory addresses that get clobbered when other parts of the program (Console.error, other fd_read calls) use `memory.data()` with the same size. In a minimal program the corruption doesn't occur; in a larger program (train.ts with vocabulary init, multiple file reads, stderr output) the static buffers are overwritten mid-read, producing null bytes after ~2048 bytes. A debug harness proved: `readString()` → 2047 null bytes, 0 merges parsed; `readFileText()` (heap-allocated buffers) → 0 null bytes, 256 merges. Fixed by creating `src/io.ts` with `readFileText()` that calls `fd_read` directly using heap-allocated `ArrayBuffer`s for iov and read_ptr.
+- **as-wasi `readString()` / `readAll()` corrupts large files** — both use `memory.data()` for iov and read_ptr buffers. These are static memory addresses that get clobbered when other parts of the program (Console.error, other fd_read calls) use `memory.data()` with the same size. In a minimal program the corruption doesn't occur; in a larger program (train.ts with vocabulary init, multiple file reads, stderr output) the static buffers are overwritten mid-read, producing null bytes after ~2048 bytes. Fixed by creating `src/io.ts` with `readFileText()` that calls `fd_read` directly using heap-allocated `ArrayBuffer`s for iov and read_ptr, and `String.UTF8.decodeUnsafe(bufPtr, bytesRead, false)` to decode each 4KB chunk. An earlier version built strings byte-by-byte via `String.fromCharCode(load<u8>(...))` which was O(N²) due to repeated string concatenation and also incorrect for multi-byte UTF-8 characters (e.g. em dashes in source comments were split into separate byte-value characters).
 - **TSV format cannot safely represent arbitrary tokens** — BPE merge rules can contain tokens like `\0`, `\n`, `\t`, and `\`. TSV uses `\t` and `\n` as delimiters, so these tokens corrupt the format. `parseMerges` read only 135 of 256 merge rules from the TSV file because `split("\n")` misinterpreted byte sequences within tokens. Fixed by switching to S-expression serialization with quoted strings and backslash escaping, parsed by the existing WAT lexer.
 - **Vocab size must be computed consistently** — `buildBpeVocab` reuses Pass 1 IDs for merged symbols that match known tokens (e.g., `i32`, `offset`). This means `bpeNextId` (sequential counter) can differ from `max(ID) + 1` across all vocab entries. Training used `getBpeNextId()` while inference used `max(ID) + 1` from the vocab file, causing a checkpoint config mismatch (return code -2). Both now use `getBpeNextId()` = 876.
 
