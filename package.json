@@ -8,6 +8,8 @@
     "build:train-bpe": "asc src/train-bpe.ts --outFile build/train-bpe.wasm --config node_modules/@assemblyscript/wasi-shim/asconfig.json --debug --sourceMap",
     "build:train": "asc src/train.ts --outFile build/train.wasm --config node_modules/@assemblyscript/wasi-shim/asconfig.json --debug --sourceMap",
     "build:infer": "asc src/infer.ts --outFile build/infer.wasm --config node_modules/@assemblyscript/wasi-shim/asconfig.json --debug --sourceMap",
+    "build:bench-io": "asc src/bench-io.ts --outFile build/bench-io.wasm --config node_modules/@assemblyscript/wasi-shim/asconfig.json --debug",
+    "bench:io": "npm run build:bench-io && wasmtime --dir . build/bench-io.wasm",
     "setup:watnot": "cd watnot && npm install && npm run build",
 
     "wat:index": "wasm2wat build/wasmgpt.wasm --fold-exprs --output build/wasmgpt.wat --offset-map build/wasmgpt.offsets.json",
