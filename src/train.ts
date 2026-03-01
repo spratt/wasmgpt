@@ -7,7 +7,7 @@
 import { CommandLine, Console, FileSystem, Descriptor } from "as-wasi/assembly";
 import { readFileText } from "./io";
 import { tokenize } from "./lexer";
-import { vocab, getNextId, initVocabulary } from "./vocabulary";
+import { vocab, getNextId, getBosId, initVocabulary } from "./vocabulary";
 import { buildBpeVocab, bpeEncodeToken, parseMerges, getBpeNextId } from "./bpe";
 import {
   initModel, gpt, stateDict, params, vocabSize,
@@ -99,7 +99,11 @@ for (let i: i32 = 0; i < tokens.length; i++) {
     }
   }
 }
-Console.error("encoded: " + allIds.length.toString() + " token IDs\n");
+// Wrap corpus with BOS (following microgpt.py)
+const bosId = getBosId();
+allIds.unshift(bosId);
+allIds.push(bosId);
+Console.error("encoded: " + allIds.length.toString() + " token IDs (including BOS)\n");
 
 // ===== Initialize model =====
 

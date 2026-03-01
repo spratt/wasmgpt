@@ -16,6 +16,8 @@
     "build:infer": "asc src/infer.ts --outFile build/infer.wasm --config node_modules/@assemblyscript/wasi-shim/asconfig.json --debug",
     "infer": "npm run build:infer && wasmtime --dir . build/infer.wasm build/vocab.sexp",
     "clean:model": "rm -f build/model.bin",
+    "clean": "rm -f build/merges.sexp build/vocab.sexp build/model.bin",
+    "rebuild": "npm run clean && npm run train:bpe && npm run train && npm run infer",
     "test": "as-test"
   },
   "devDependencies": {

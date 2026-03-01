@@ -78,9 +78,9 @@ All helper functions are top-level (no closures, per AssemblyScript constraints)
 
 ### Model size
 
-Total parameters = 2VE + BE + L(12E² + 4E), where V = vocab size, E = embedding dimension, B = context length, L = layers. Weight tying (`lm_head` shares weights with `wte`) saves VE parameters by reusing the token embedding matrix as the output projection — both are V×E matrices that relate tokens to the embedding space, so sharing enforces symmetry and reduces parameter count. wasmgpt uses weight tying.
+Total parameters = VE + BE + L(12E² + 4E), where V = vocab size, E = embedding dimension, B = context length, L = layers. This formula reflects weight tying: the token embedding (`wte`, V×E) is reused as the output projection (no separate `lm_head`), saving VE parameters. Both operations relate tokens to the same embedding space, so sharing enforces symmetry and reduces parameter count.
 
-wasmgpt's vocabulary (876 tokens after BPE) is smaller than consgpt.lisp's (1,382), reducing the embedding and output matrices.
+wasmgpt's vocabulary (876 tokens after BPE) is smaller than consgpt.lisp's (1,382), reducing the embedding matrix.
 
 **Configurations considered (V=876):**
 
@@ -243,6 +243,44 @@ WASI CLI program: `wasmtime --dir . build/train.wasm <corpus.wat> <merges.sexp> 
 **Batch extraction:** `getBatch(step)` returns a contiguous window of `TRAIN_SEQ_LEN + 1` IDs. Start index: `(step * TRAIN_SEQ_LEN) % max(1, corpusLen - TRAIN_SEQ_LEN - 1)`.
 
 **Cross-entropy loss:** Fused `OP_CROSS_ENTROPY` (softmax + NLL in one op) stores softmax probabilities in `cacheData` for backward. More numerically stable and efficient than the composed version `neg(logOp(slice(softmax(logits), target, target+1)))`.
+
+### Inference pipeline (`src/infer.ts`)
+
+WASI CLI program: `wasmtime --dir . build/infer.wasm <vocab.sexp> [numSamples] [temperature] [prompt...]`
+
+**Vocabulary loading:** Inference loads the full vocabulary from `build/vocab.sexp` (written by `train-bpe.ts` after BPE training) rather than initializing `vocabulary.ts` + `bpe.ts`. The S-expression file provides both forward (`tokenToId: Map<string, i32>`) and reverse (`idToToken: Map<i32, string>`) mappings. Vocab size is computed as `max(ID) + 1` across all entries.
+
+**Prompt encoding:** If a prompt is provided, it is tokenized by the lexer and encoded via simple `tokenToId` lookup. Unknown prompt tokens are skipped with a warning. Each prompt token is fed through `gpt()` one at a time, building the KV cache, with graph detachment after each position.
+
+**Autoregressive generation:** After the prompt (or from token `(` if no prompt), the loop runs until `BLOCK_SIZE`:
+
+```
+logits = gpt(tokenId, posId, cacheKeys, cacheVals)
+scaled = divScalar(logits, temperature)
+probs = softmax(scaled)
+nextId = weightedChoice(probs.data)
+detachKvCache(cacheKeys, cacheVals)
+```
+
+Temperature (default 0.8) controls sampling randomness — lower values concentrate probability mass on the most likely tokens.
+
+**KV cache detachment:** During training, `backward()` detaches the entire computation graph. During inference there is no backward pass, so the graph grows unboundedly as tokens are generated. After sampling each token, `detachKvCache` walks all cached K and V tensors across all layers and clears their `children` arrays. This preserves tensor data (needed for future attention) while breaking graph references so intermediate nodes can be GC'd.
+
+**Token decoding:** Converts generated IDs back to WAT text via `idToToken` lookup. Spacing heuristics: no space after `(`, no space before `)`, space between all other adjacent tokens. Unknown IDs decode as `<?>`.
+
+**Checkpoint loading:** Inference aborts if the checkpoint is missing or has a config mismatch. It passes dummy Adam m/v maps to `loadCheckpoint` (same-shaped zero arrays, discarded after load) since the checkpoint format includes optimizer state that must be read past.
+
+**Differences from consgpt.lisp inference:**
+
+| Aspect | consgpt.lisp | wasmgpt |
+|---|---|---|
+| Start token | BOS (special token after BPE vocab) | First token of prompt, or `(` if no prompt |
+| Stop condition | BOS token generated | BLOCK_SIZE reached (no BOS/EOS token) |
+| Temperature | 0.8 (scalar Val division) | 0.8 (tensor divScalar) |
+| Decode spacing | Lisp-specific (no space after `(`, `'`, `` ` ``, `#'`, `#(`, `#\\`) | WAT-specific (no space after `(`, no space before `)`) |
+| Graph detachment | Nil out children/local-grads on scalar Val nodes | Clear children arrays on Tensor nodes |
+| Checkpoint loading | Ignores Adam state | Passes dummy Adam maps, discards after load |
+| Prompt support | No (always starts from BOS) | Optional prompt prefix |
 
 ### Checkpoint persistence (`src/checkpoint.ts`)
 
@@ -496,6 +534,10 @@ Key constraints encountered during implementation:
 - The **op enum dispatch pattern** is clean and extensible: adding a new op requires (1) a constant, (2) a forward function, (3) a backward case in `backwardOp`.
 - **`rmsnorm` backward** has a non-trivial chain rule. The clean formula is `a.grad[i] += rmsScale * (g[i] - t.data[i] * dotGOut / n)`.
 - **`concat` backward** must index into the output grad with offset (`g[offset + j]`) but into each child's grad from 0 (`child.grad[j]`).
+- **`export let` is not a live binding** — `export let nextId` in vocabulary.ts was imported by other modules, but AssemblyScript captures the value at import time (unlike ES module live bindings). After `initVocabulary()` set `nextId = 568`, importers still saw 0. Fixed by replacing with a `getNextId()` getter function.
+- **as-wasi `readString()` / `readAll()` corrupts large files** — both use `memory.data()` for iov and read_ptr buffers. These are static memory addresses that get clobbered when other parts of the program (Console.error, other fd_read calls) use `memory.data()` with the same size. In a minimal program the corruption doesn't occur; in a larger program (train.ts with vocabulary init, multiple file reads, stderr output) the static buffers are overwritten mid-read, producing null bytes after ~2048 bytes. A debug harness proved: `readString()` → 2047 null bytes, 0 merges parsed; `readFileText()` (heap-allocated buffers) → 0 null bytes, 256 merges. Fixed by creating `src/io.ts` with `readFileText()` that calls `fd_read` directly using heap-allocated `ArrayBuffer`s for iov and read_ptr.
+- **TSV format cannot safely represent arbitrary tokens** — BPE merge rules can contain tokens like `\0`, `\n`, `\t`, and `\`. TSV uses `\t` and `\n` as delimiters, so these tokens corrupt the format. `parseMerges` read only 135 of 256 merge rules from the TSV file because `split("\n")` misinterpreted byte sequences within tokens. Fixed by switching to S-expression serialization with quoted strings and backslash escaping, parsed by the existing WAT lexer.
+- **Vocab size must be computed consistently** — `buildBpeVocab` reuses Pass 1 IDs for merged symbols that match known tokens (e.g., `i32`, `offset`). This means `bpeNextId` (sequential counter) can differ from `max(ID) + 1` across all vocab entries. Training used `getBpeNextId()` while inference used `max(ID) + 1` from the vocab file, causing a checkpoint config mismatch (return code -2). Both now use `getBpeNextId()` = 876.
 
 ---
 
@@ -506,3 +548,5 @@ Key constraints encountered during implementation:
 - How should the tokenizer handle WASM 3.0 extensions vs. MVP instructions — unified vocabulary or versioned?
 - What is a reasonable model size given browser memory constraints for inference?
 - How to handle the structured block nesting in WAT (blocks must be well-formed) — should this be enforced at the tokenizer level or left to the model to learn?
+- Should we add a BOS/EOS token to wasmgpt's vocabulary? consgpt.lisp uses BOS to signal both start and end of generation. Without it, inference runs until BLOCK_SIZE. Adding one would require retraining.
+- Should we support top-k or top-p (nucleus) sampling? Temperature-only is simpler and matches consgpt.lisp.

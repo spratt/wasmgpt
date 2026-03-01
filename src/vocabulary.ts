@@ -326,4 +326,11 @@ export function initVocabulary(): void {
     "f64x2.relaxed_madd", "f64x2.relaxed_nmadd",
     "f64x2.relaxed_min", "f64x2.relaxed_max",
   ]);
+
+  // --- Control tokens ---
+  reg("<BOS>");
+}
+
+export function getBosId(): i32 {
+  return vocab.get("<BOS>");
 }

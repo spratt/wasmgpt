@@ -69,6 +69,15 @@ for (let i: i32 = 0; i < vocabKeys.length; i++) {
 
 Console.error("vocabulary: " + totalVocab.toString() + " tokens\n");
 
+// ===== BOS token =====
+
+const BOS_TOKEN = "<BOS>";
+if (!tokenToId.has(BOS_TOKEN)) {
+  Console.error("ERROR: no <BOS> token in vocabulary\n");
+  abort();
+}
+const BOS_ID: i32 = tokenToId.get(BOS_TOKEN);
+
 // ===== Sort helper =====
 
 function stringLessThan(a: string, b: string): i32 {
@@ -149,8 +158,13 @@ for (let s: i32 = 0; s < numSamples; s++) {
   }
 
   const generated = new Array<i32>();
-  let tokenId: i32 = 0; // default start: "(" (ID 0)
+  let tokenId: i32 = BOS_ID;
   let posId: i32 = 0;
+
+  // Feed BOS through model at position 0
+  gpt(tokenId, posId, cacheKeys, cacheVals);
+  detachKvCache(cacheKeys, cacheVals);
+  posId++;
 
   // Feed prompt through model
   if (promptText.length > 0) {
@@ -171,6 +185,7 @@ for (let s: i32 = 0; s < numSamples; s++) {
     const probs = softmax(scaled);
     const nextId = weightedChoice(probs.data);
     detachKvCache(cacheKeys, cacheVals);
+    if (nextId == BOS_ID) break;
     generated.push(nextId);
     tokenId = nextId;
   }

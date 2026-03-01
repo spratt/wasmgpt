@@ -1,5 +1,5 @@
 import { test, expect } from "assemblyscript-unittest-framework/assembly";
-import { vocab, getNextId, initVocabulary } from "../src/vocabulary";
+import { vocab, getNextId, initVocabulary, getBosId } from "../src/vocabulary";
 
 // --- Initialization ---
 
@@ -205,4 +205,26 @@ test("block is registered (both keyword and instruction)", () => {
 test("select is registered (appears twice in opcode.def)", () => {
   initVocabulary();
   expect(vocab.has("select")).equal(true);
+});
+
+// --- BOS token ---
+
+test("<BOS> is in vocab after initVocabulary", () => {
+  initVocabulary();
+  expect(vocab.has("<BOS>")).equal(true);
+});
+
+test("<BOS> has ID 568", () => {
+  initVocabulary();
+  expect(vocab.get("<BOS>")).equal(568);
+});
+
+test("getBosId returns 568", () => {
+  initVocabulary();
+  expect(getBosId()).equal(568);
+});
+
+test("getNextId returns 569 after init", () => {
+  initVocabulary();
+  expect(getNextId()).equal(569);
 });
