@@ -1,11 +1,12 @@
 // train-bpe: Train BPE merge rules on a WAT corpus.
 // Reads a WAT file, tokenizes it, partitions tokens into known (Pass 1)
-// and unknown, trains BPE on the unknowns, and writes merge rules as TSV.
+// and unknown, trains BPE on the unknowns, and writes merge rules as S-expressions.
 //
 // Usage:
 //   wasmtime --dir . build/train-bpe.wasm <corpus.wat> [numMerges]
 
 import { CommandLine, Console, FileSystem, Descriptor } from "as-wasi/assembly";
+import { readFileText } from "./io";
 import { tokenize } from "./lexer";
 import { vocab, getNextId, initVocabulary } from "./vocabulary";
 import { trainBpe, serializeMerges, buildBpeVocab, serializeVocab } from "./bpe";
@@ -32,7 +33,7 @@ if (fd === null) {
   Console.error("Error: could not open file: " + corpusPath + "\n");
   abort();
 }
-const watText = (fd as Descriptor).readString();
+const watText = readFileText(fd as Descriptor);
 if (watText === null) {
   Console.error("Error: could not read file: " + corpusPath + "\n");
   abort();
@@ -62,35 +63,26 @@ const merges = trainBpe(unknowns, numMerges);
 
 Console.error("Learned " + merges.length.toString() + " merge rules\n");
 
-// --- Write merges to stdout ---
+// --- Write merges to build/merges.sexp ---
 
-const output = serializeMerges(merges);
-writeOutput(output);
+const mergesSexp = serializeMerges(merges);
+const mergesFd = FileSystem.open("build/merges.sexp", "w");
+if (mergesFd === null) {
+  Console.error("Error: could not open build/merges.sexp for writing\n");
+  abort();
+}
+(mergesFd as Descriptor).writeString(mergesSexp);
+Console.error("Wrote build/merges.sexp\n");
 
-// --- Build BPE vocab and write vocab.tsv ---
+// --- Build BPE vocab and write vocab.sexp ---
 
 buildBpeVocab(merges, getNextId());
 
-const vocabTsv = serializeVocab();
-const vocabFd = FileSystem.open("build/vocab.tsv", "w");
+const vocabSexp = serializeVocab();
+const vocabFd = FileSystem.open("build/vocab.sexp", "w");
 if (vocabFd === null) {
-  Console.error("Error: could not open build/vocab.tsv for writing\n");
+  Console.error("Error: could not open build/vocab.sexp for writing\n");
   abort();
 }
-(vocabFd as Descriptor).writeString(vocabTsv);
-Console.error("Wrote build/vocab.tsv\n");
-
-// --- Helpers ---
-
-function writeOutput(text: string): void {
-  let start: i32 = 0;
-  for (let i: i32 = 0; i < text.length; i++) {
-    if (text.charCodeAt(i) == 10) {
-      Console.write(text.substring(start, i + 1), false);
-      start = i + 1;
-    }
-  }
-  if (start < text.length) {
-    Console.write(text.substring(start), false);
-  }
-}
+(vocabFd as Descriptor).writeString(vocabSexp);
+Console.error("Wrote build/vocab.sexp\n");

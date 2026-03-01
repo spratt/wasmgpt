@@ -2,9 +2,10 @@
 // WASI CLI entry point.
 //
 // Usage:
-//   wasmtime --dir . build/train.wasm <corpus.wat> <merges.tsv> [numSteps]
+//   wasmtime --dir . build/train.wasm <corpus.wat> <merges.sexp> [numSteps]
 
 import { CommandLine, Console, FileSystem, Descriptor } from "as-wasi/assembly";
+import { readFileText } from "./io";
 import { tokenize } from "./lexer";
 import { vocab, getNextId, initVocabulary } from "./vocabulary";
 import { buildBpeVocab, bpeEncodeToken, parseMerges, getBpeNextId } from "./bpe";
@@ -20,7 +21,7 @@ import { Tensor, backward, crossEntropy, divScalar, tensorSum, concat } from "./
 const args = CommandLine.all;
 
 if (args.length < 3) {
-  Console.error("Usage: train <corpus.wat> <merges.tsv> [numSteps]\n");
+  Console.error("Usage: train <corpus.wat> <merges.sexp> [numSteps]\n");
   abort();
 }
 
@@ -59,7 +60,7 @@ if (mergesFd === null) {
   Console.error("Error: could not open merges file: " + mergesPath + "\n");
   abort();
 }
-const mergesText = (mergesFd as Descriptor).readString();
+const mergesText = readFileText(mergesFd as Descriptor);
 if (mergesText === null) {
   Console.error("Error: could not read merges file: " + mergesPath + "\n");
   abort();
@@ -76,7 +77,7 @@ if (corpusFd === null) {
   Console.error("Error: could not open corpus: " + corpusPath + "\n");
   abort();
 }
-const corpusText = (corpusFd as Descriptor).readString();
+const corpusText = readFileText(corpusFd as Descriptor);
 if (corpusText === null) {
   Console.error("Error: could not read corpus: " + corpusPath + "\n");
   abort();

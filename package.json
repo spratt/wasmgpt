@@ -10,11 +10,11 @@
     "annotate": "wasmtime --dir . watnot/build/watnot.wasm build/wasmgpt.wasm.map build/wasmgpt.wat build/wasmgpt.offsets.json src/index.ts src/lexer.ts src/vocabulary.ts src/bpe.ts > build/wasmgpt.annotated.wat",
     "corpus": "npm run build && npm run wat && npm run annotate",
     "build:train-bpe": "asc src/train-bpe.ts --outFile build/train-bpe.wasm --config node_modules/@assemblyscript/wasi-shim/asconfig.json --debug",
-    "train:bpe": "npm run corpus && npm run build:train-bpe && wasmtime --dir . build/train-bpe.wasm build/wasmgpt.annotated.wat > build/merges.tsv",
+    "train:bpe": "npm run corpus && npm run build:train-bpe && wasmtime --dir . build/train-bpe.wasm build/wasmgpt.annotated.wat",
     "build:train": "asc src/train.ts --outFile build/train.wasm --config node_modules/@assemblyscript/wasi-shim/asconfig.json --debug",
-    "train": "npm run build:train && wasmtime --dir . build/train.wasm build/wasmgpt.annotated.wat build/merges.tsv",
+    "train": "npm run build:train && wasmtime --dir . build/train.wasm build/wasmgpt.annotated.wat build/merges.sexp",
     "build:infer": "asc src/infer.ts --outFile build/infer.wasm --config node_modules/@assemblyscript/wasi-shim/asconfig.json --debug",
-    "infer": "npm run build:infer && wasmtime --dir . build/infer.wasm build/vocab.tsv",
+    "infer": "npm run build:infer && wasmtime --dir . build/infer.wasm build/vocab.sexp",
     "test": "as-test"
   },
   "devDependencies": {

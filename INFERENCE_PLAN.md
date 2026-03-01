@@ -8,7 +8,7 @@ The reference implementation is `consgpt.lisp/infer.lisp`. The inference pipelin
 
 ## Step 0: Research findings
 
-- No reverse vocabulary mapping exists — `vocab` and `bpeVocab` are both `Map<string, i32>` (forward only). Rather than building the reverse map in memory (wastes memory during training) or computing it at inference startup (wastes compute), we serialize the full vocabulary to `build/vocab.tsv` during the BPE training step. Inference loads this TSV to get both forward (`token → ID`) and reverse (`ID → token`) mappings without initializing vocabulary.ts or bpe.ts.
+- No reverse vocabulary mapping exists — `vocab` and `bpeVocab` are both `Map<string, i32>` (forward only). Rather than building the reverse map in memory (wastes memory during training) or computing it at inference startup (wastes compute), we serialize the full vocabulary to `build/vocab.sexp` during the BPE training step. Inference loads this TSV to get both forward (`token → ID`) and reverse (`ID → token`) mappings without initializing vocabulary.ts or bpe.ts.
 - `divScalar(a, s)` already exists in tensor.ts — creates a graph node but that's fine for inference (graph gets detached per step).
 - `softmax(a)` already exists in tensor.ts — numerically stable with max subtraction.
 - No explicit single-tensor `detach()` function — we need a `detachKvCache` helper that walks all cached K/V tensors and clears their `children` arrays.
@@ -35,9 +35,9 @@ The reference implementation is `consgpt.lisp/infer.lisp`. The inference pipelin
 
 Currently only forward maps exist (`token → ID`). Inference needs `ID → token` for decoding generated sequences.
 
-**Approach:** Serialize the full vocabulary (Pass 1 + BPE) to `build/vocab.tsv` during BPE training, after `buildBpeVocab` completes. Each line is `id\ttoken`. This follows the same pattern as `build/merges.tsv` for BPE merge rules.
+**Approach:** Serialize the full vocabulary (Pass 1 + BPE) to `build/vocab.sexp` during BPE training, after `buildBpeVocab` completes. Each line is `id\ttoken`. This follows the same pattern as `build/merges.sexp` for BPE merge rules.
 
-At inference time, load `build/vocab.tsv` to build both:
+At inference time, load `build/vocab.sexp` to build both:
 - `tokenToId: Map<string, i32>` — for encoding prompts
 - `idToToken: Map<i32, string>` — for decoding generated tokens
 
@@ -99,11 +99,11 @@ This is a natural extension: encode the prompt tokens, feed them through `gpt()`
 
 ### Step 1: Add vocabulary serialization to BPE training pipeline
 
-After `buildBpeVocab` completes in `src/train-bpe.ts`, write `build/vocab.tsv` to stdout (or a separate file). Each line: `id\ttoken`. Covers all entries from both `vocab` and `bpeVocab`.
+After `buildBpeVocab` completes in `src/train-bpe.ts`, write `build/vocab.sexp` to stdout (or a separate file). Each line: `id\ttoken`. Covers all entries from both `vocab` and `bpeVocab`.
 
 Alternatively, add a `serializeVocab()` function to `src/bpe.ts` (alongside `serializeMerges()`) that iterates both maps and produces the TSV. The train-bpe entry point calls it and writes the output.
 
-**Files:** Edit `src/bpe.ts` (add `serializeVocab`), edit `src/train-bpe.ts` (write vocab.tsv)
+**Files:** Edit `src/bpe.ts` (add `serializeVocab`), edit `src/train-bpe.ts` (write vocab.sexp)
 
 ### Step 2: Add `weightedChoice` to model.ts
 
@@ -137,13 +137,13 @@ This can live in model.ts (near `gpt()`) or in the inference entry point.
 WASI CLI program:
 
 ```
-wasmtime --dir . build/infer.wasm <vocab.tsv> [numSamples] [temperature] [prompt...]
+wasmtime --dir . build/infer.wasm <vocab.sexp> [numSamples] [temperature] [prompt...]
 ```
 
 **Flow:**
 
 1. Parse CLI args (vocab path, optional numSamples default 5, temperature default 0.8, optional prompt words joined with spaces)
-2. Load vocabulary from `build/vocab.tsv`: parse each `id\ttoken` line, build both `tokenToId: Map<string, i32>` and `idToToken: Map<i32, string>`, track max ID for vocab size
+2. Load vocabulary from `build/vocab.sexp`: parse each `id\ttoken` line, build both `tokenToId: Map<string, i32>` and `idToToken: Map<i32, string>`, track max ID for vocab size
 3. Initialize model with `initModel(vocabSize)`
 4. Load checkpoint with dummy Adam maps (Option A), discard after load
 5. For each sample:
@@ -168,7 +168,7 @@ function decodeIds(ids: Array<i32>, idToToken: Map<i32, string>): string
 
 Maps each ID through `idToToken`, falls back to `"<?>"` for unknown IDs. Applies spacing: no space after `(`, no space before `)`, space between all other adjacent tokens.
 
-**Note on prompt encoding:** Prompt tokens are encoded via simple `tokenToId` lookup (loaded from vocab.tsv). Unknown tokens in the prompt are skipped with a warning. This is simpler than full BPE encoding but sufficient for WAT prompts where most tokens are known mnemonics/syntax. Full BPE encoding of prompt tokens (splitting unknowns into subwords) is a future enhancement.
+**Note on prompt encoding:** Prompt tokens are encoded via simple `tokenToId` lookup (loaded from vocab.sexp). Unknown tokens in the prompt are skipped with a warning. This is simpler than full BPE encoding but sufficient for WAT prompts where most tokens are known mnemonics/syntax. Full BPE encoding of prompt tokens (splitting unknowns into subwords) is a future enhancement.
 
 **Files:** Create `src/infer.ts`, edit `package.json` (add `build:infer` and `infer` scripts), edit `as-test.config.js` (exclude `src/infer.ts`)
 
@@ -195,7 +195,7 @@ These can go in `tests/model.test.ts` (for weightedChoice) and a new `tests/infe
 
 ```json
 "build:infer": "asc src/infer.ts --outFile build/infer.wasm --config node_modules/@assemblyscript/wasi-shim/asconfig.json --debug",
-"infer": "npm run build:infer && wasmtime --dir . build/infer.wasm build/vocab.tsv"
+"infer": "npm run build:infer && wasmtime --dir . build/infer.wasm build/vocab.sexp"
 ```
 
 ## Key differences from consgpt.lisp inference
@@ -213,5 +213,64 @@ These can go in `tests/model.test.ts` (for weightedChoice) and a new `tests/infe
 ## Open questions
 
 - Should we add a BOS/EOS token to wasmgpt's vocabulary? consgpt.lisp uses BOS to signal both start and end of generation. Without it, inference runs until BLOCK_SIZE. Adding one would require retraining.
-- Should temperature be configurable via CLI arg or hardcoded? CLI arg is more flexible but adds parsing.
 - Should we support top-k or top-p (nucleus) sampling? Temperature-only is simpler and matches consgpt.lisp.
+
+## Resolved questions
+
+- Temperature is configurable via CLI arg (default 0.8).
+
+## Lessons learned
+
+### 1. AssemblyScript `export let` is not a live binding
+
+`export let nextId` in vocabulary.ts was imported by other modules, but
+AssemblyScript captures the value at import time (unlike ES module live
+bindings). After `initVocabulary()` set `nextId = 568`, importers still
+saw 0. Fixed by replacing with a `getNextId()` getter function.
+
+### 2. as-wasi `readString()` / `readAll()` corrupts large files
+
+`Descriptor.readString()` and `readAll()` use `memory.data()` for iov
+and read_ptr buffers. These are static memory addresses that get
+clobbered when other parts of the program (e.g., Console.error, other
+fd_read calls) use `memory.data()` with the same size. In a minimal
+program (debug harness), the corruption doesn't occur. In a larger
+program (train.ts with vocabulary init, multiple file reads, stderr
+output), the static buffers are overwritten mid-read, producing null
+bytes after ~2048 bytes.
+
+**Proof:** A debug harness reading `build/merges.sexp` (4740 bytes)
+showed:
+
+| Method | Null bytes | Merges parsed |
+|--------|------------|---------------|
+| `readString()` | 2047 | 0 |
+| `readFileText()` (heap buffers) | 0 | 256 |
+| `readAll()` raw bytes (in isolation) | 0 | n/a |
+
+Fixed by creating `src/io.ts` with `readFileText()` that calls `fd_read`
+directly using heap-allocated `ArrayBuffer`s for iov and read_ptr,
+avoiding the shared `memory.data()` addresses entirely.
+
+### 3. TSV format cannot safely represent arbitrary tokens
+
+BPE merge rules can contain tokens like `\0`, `\00`, `\n`, `\t`, `"`,
+and `\`. TSV uses `\t` and `\n` as delimiters, so these tokens corrupt
+the format. `parseMerges` read only 135 of 256 merge rules from the TSV
+file because `split("\n")` misinterpreted byte sequences within tokens.
+
+Fixed by switching to S-expression serialization:
+- Merges: `(merges ("left" "right") ...)`
+- Vocab: `(vocab ("token" id) ...)`
+
+Tokens are quoted strings with `\` → `\\` and `"` → `\"` escaping.
+The existing WAT lexer parses this format correctly.
+
+### 4. Vocab size must be computed consistently
+
+`buildBpeVocab` reuses Pass 1 IDs for merged symbols that match known
+tokens (e.g., `i32`, `offset`). This means `bpeNextId` (sequential
+counter) can differ from `max(ID) + 1` across all entries. Training
+used `getBpeNextId()` while inference used `max(ID) + 1` from the vocab
+file, causing a mismatch that made `loadCheckpoint` reject the model
+(config mismatch, return code -2). Both now use `getBpeNextId()` = 876.

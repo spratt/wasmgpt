@@ -2,10 +2,12 @@
 // WASI CLI entry point.
 //
 // Usage:
-//   wasmtime --dir . build/infer.wasm <vocab.tsv> [numSamples] [temperature] [prompt...]
+//   wasmtime --dir . build/infer.wasm <vocab.sexp> [numSamples] [temperature] [prompt...]
 
 import { CommandLine, Console, FileSystem, Descriptor } from "as-wasi/assembly";
+import { readFileText } from "./io";
 import { tokenize } from "./lexer";
+import { parseVocab } from "./bpe";
 import {
   initModel, gpt, stateDict, weightedChoice, detachKvCache,
   N_LAYER, BLOCK_SIZE,
@@ -18,7 +20,7 @@ import { Tensor, softmax, divScalar } from "./tensor";
 const args = CommandLine.all;
 
 if (args.length < 2) {
-  Console.error("Usage: infer <vocab.tsv> [numSamples] [temperature] [prompt...]\n");
+  Console.error("Usage: infer <vocab.sexp> [numSamples] [temperature] [prompt...]\n");
   abort();
 }
 
@@ -40,32 +42,27 @@ if (args.length >= 5) {
   promptText = parts.join(" ");
 }
 
-// ===== Load vocabulary from TSV =====
+// ===== Load vocabulary from S-expression =====
 
 const vocabFd = FileSystem.open(vocabPath, "r");
 if (vocabFd === null) {
   Console.error("Error: could not open vocab file: " + vocabPath + "\n");
   abort();
 }
-const vocabText = (vocabFd as Descriptor).readString();
+const vocabText = readFileText(vocabFd as Descriptor);
 if (vocabText === null) {
   Console.error("Error: could not read vocab file: " + vocabPath + "\n");
   abort();
 }
 
-const tokenToId = new Map<string, i32>();
+const tokenToId = parseVocab(vocabText as string);
 const idToToken = new Map<i32, string>();
 let totalVocab: i32 = 0;
 
-const vocabLines = (vocabText as string).split("\n");
-for (let i: i32 = 0; i < vocabLines.length; i++) {
-  const line = vocabLines[i];
-  if (line.length == 0) continue;
-  const tabIdx = line.indexOf("\t");
-  if (tabIdx < 0) continue;
-  const id = I32.parseInt(line.substring(0, tabIdx));
-  const token = line.substring(tabIdx + 1);
-  tokenToId.set(token, id);
+const vocabKeys = tokenToId.keys();
+for (let i: i32 = 0; i < vocabKeys.length; i++) {
+  const token = vocabKeys[i];
+  const id = tokenToId.get(token);
   idToToken.set(id, token);
   if (id >= totalVocab) totalVocab = id + 1;
 }

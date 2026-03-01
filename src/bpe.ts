@@ -3,6 +3,7 @@
 // Ported from consgpt.lisp's bpe.lisp.
 
 import { vocab, getNextId } from "./vocabulary";
+import { tokenize } from "./lexer";
 
 // Re-export getNextId so callers can access it
 export { getNextId };
@@ -228,43 +229,132 @@ export function getBpeNextId(): i32 {
   return bpeNextId;
 }
 
-// ===== Merge persistence =====
+// ===== S-expression helpers =====
 
-export function serializeMerges(merges: Array<Array<string>>): string {
+export function escapeForSexp(s: string): string {
   let result = "";
-  for (let i = 0; i < merges.length; i++) {
-    result += merges[i][0] + "\t" + merges[i][1] + "\n";
+  for (let i = 0; i < s.length; i++) {
+    const ch = s.charAt(i);
+    if (ch == "\\") {
+      result += "\\\\";
+    } else if (ch == "\"") {
+      result += "\\\"";
+    } else {
+      result += ch;
+    }
   }
   return result;
 }
 
-export function serializeVocab(): string {
+export function unescapeFromSexp(s: string): string {
   let result = "";
+  let i = 0;
+  while (i < s.length) {
+    if (i + 1 < s.length && s.charAt(i) == "\\") {
+      const next = s.charAt(i + 1);
+      if (next == "\\") {
+        result += "\\";
+        i += 2;
+      } else if (next == "\"") {
+        result += "\"";
+        i += 2;
+      } else {
+        result += s.charAt(i);
+        i++;
+      }
+    } else {
+      result += s.charAt(i);
+      i++;
+    }
+  }
+  return result;
+}
+
+export function stripQuotes(s: string): string {
+  if (s.length >= 2 && s.charAt(0) == "\"" && s.charAt(s.length - 1) == "\"") {
+    return s.substring(1, s.length - 1);
+  }
+  return s;
+}
+
+// ===== Merge persistence =====
+
+export function serializeMerges(merges: Array<Array<string>>): string {
+  let result = "(merges";
+  for (let i = 0; i < merges.length; i++) {
+    result += "\n  (\"" + escapeForSexp(merges[i][0]) + "\" \"" + escapeForSexp(merges[i][1]) + "\")";
+  }
+  result += ")\n";
+  return result;
+}
+
+export function serializeVocab(): string {
+  let result = "(vocab";
   const keys = vocab.keys();
   for (let i = 0; i < keys.length; i++) {
     const token = keys[i];
-    result += vocab.get(token).toString() + "\t" + token + "\n";
+    result += "\n  (\"" + escapeForSexp(token) + "\" " + vocab.get(token).toString() + ")";
   }
   const bpeKeys = bpeVocab.keys();
   for (let i = 0; i < bpeKeys.length; i++) {
     const token = bpeKeys[i];
     if (vocab.has(token)) continue; // already in Pass 1
-    result += bpeVocab.get(token).toString() + "\t" + token + "\n";
+    result += "\n  (\"" + escapeForSexp(token) + "\" " + bpeVocab.get(token).toString() + ")";
   }
+  result += ")\n";
   return result;
 }
 
 export function parseMerges(text: string): Array<Array<string>> {
   const merges = new Array<Array<string>>();
-  const lines = text.split("\n");
-  for (let i = 0; i < lines.length; i++) {
-    const line = lines[i];
-    if (line.length == 0) continue;
-    const tabIdx = line.indexOf("\t");
-    if (tabIdx < 0) continue;
-    const left = line.substring(0, tabIdx);
-    const right = line.substring(tabIdx + 1);
-    merges.push([left, right]);
+  const tokens = tokenize(text);
+  // Expected: ( merges ( "left" "right" ) ( "left" "right" ) ... )
+  let i = 0;
+  // Skip opening ( and "merges"
+  if (i < tokens.length && tokens[i] == "(") i++;
+  if (i < tokens.length && tokens[i] == "merges") i++;
+  while (i < tokens.length) {
+    if (tokens[i] == ")") break; // closing paren of merges
+    if (tokens[i] == "(") {
+      i++; // skip (
+      if (i + 2 < tokens.length) {
+        const left = unescapeFromSexp(stripQuotes(tokens[i]));
+        i++;
+        const right = unescapeFromSexp(stripQuotes(tokens[i]));
+        i++;
+        merges.push([left, right]);
+      }
+      if (i < tokens.length && tokens[i] == ")") i++; // skip closing )
+    } else {
+      i++;
+    }
   }
   return merges;
+}
+
+export function parseVocab(text: string): Map<string, i32> {
+  const result = new Map<string, i32>();
+  const tokens = tokenize(text);
+  // Expected: ( vocab ( "token" id ) ( "token" id ) ... )
+  let i = 0;
+  // Skip opening ( and "vocab"
+  if (i < tokens.length && tokens[i] == "(") i++;
+  if (i < tokens.length && tokens[i] == "vocab") i++;
+  while (i < tokens.length) {
+    if (tokens[i] == ")") break; // closing paren of vocab
+    if (tokens[i] == "(") {
+      i++; // skip (
+      if (i + 2 < tokens.length) {
+        const token = unescapeFromSexp(stripQuotes(tokens[i]));
+        i++;
+        const id = I32.parseInt(tokens[i]);
+        i++;
+        result.set(token, id);
+      }
+      if (i < tokens.length && tokens[i] == ")") i++; // skip closing )
+    } else {
+      i++;
+    }
+  }
+  return result;
 }

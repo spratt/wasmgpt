@@ -269,3 +269,196 @@ test("multiple spaces between tokens", () => {
   expect(result[0]).equal("i32.add");
   expect(result[1]).equal("i32.sub");
 });
+
+// --- S-expression serialization format ---
+// These tests verify that the lexer can parse the S-expression format
+// we plan to use for BPE merges and vocabulary persistence.
+
+// Merges format: (merges ("a" "b") ("st" "ar") ...)
+
+test("sexp: simple merge pair", () => {
+  const result = tokenize('("a" "b")');
+  expect(result.length).equal(4);
+  expect(result[0]).equal("(");
+  expect(result[1]).equal('"a"');
+  expect(result[2]).equal('"b"');
+  expect(result[3]).equal(")");
+});
+
+test("sexp: merge list with multiple pairs", () => {
+  const result = tokenize('(merges ("s" "t") ("st" "ar"))');
+  expect(result.length).equal(11);
+  expect(result[0]).equal("(");
+  expect(result[1]).equal("merges");
+  expect(result[2]).equal("(");
+  expect(result[3]).equal('"s"');
+  expect(result[4]).equal('"t"');
+  expect(result[5]).equal(")");
+  expect(result[6]).equal("(");
+  expect(result[7]).equal('"st"');
+  expect(result[8]).equal('"ar"');
+  expect(result[9]).equal(")");
+  expect(result[10]).equal(")");
+});
+
+// Vocab format: (vocab ("(" 0) ("module" 2) ...)
+
+test("sexp: vocab entry with integer ID", () => {
+  const result = tokenize('("module" 2)');
+  expect(result.length).equal(4);
+  expect(result[0]).equal("(");
+  expect(result[1]).equal('"module"');
+  expect(result[2]).equal("2");
+  expect(result[3]).equal(")");
+});
+
+test("sexp: vocab list", () => {
+  const result = tokenize('(vocab ("(" 0) (")" 1) ("module" 2))');
+  expect(result.length).equal(15);
+  expect(result[0]).equal("(");
+  expect(result[1]).equal("vocab");
+  expect(result[2]).equal("(");
+  expect(result[3]).equal('"("');
+  expect(result[4]).equal("0");
+  expect(result[5]).equal(")");
+  expect(result[6]).equal("(");
+  expect(result[7]).equal('")"');
+  expect(result[8]).equal("1");
+  expect(result[9]).equal(")");
+  expect(result[10]).equal("(");
+  expect(result[11]).equal('"module"');
+  expect(result[12]).equal("2");
+  expect(result[13]).equal(")");
+  expect(result[14]).equal(")");
+});
+
+// Edge cases: tokens that caused the TSV bug
+
+test("sexp: string containing backslash-zero", () => {
+  const result = tokenize('("\\00" "x")');
+  expect(result.length).equal(4);
+  expect(result[0]).equal("(");
+  expect(result[1]).equal('"\\00"');
+  expect(result[2]).equal('"x"');
+  expect(result[3]).equal(")");
+});
+
+test("sexp: string containing backslash-n", () => {
+  const result = tokenize('("\\n" "y")');
+  expect(result.length).equal(4);
+  expect(result[0]).equal("(");
+  expect(result[1]).equal('"\\n"');
+  expect(result[2]).equal('"y"');
+  expect(result[3]).equal(")");
+});
+
+test("sexp: string containing backslash-t", () => {
+  const result = tokenize('("\\t" "z")');
+  expect(result.length).equal(4);
+  expect(result[0]).equal("(");
+  expect(result[1]).equal('"\\t"');
+  expect(result[2]).equal('"z"');
+  expect(result[3]).equal(")");
+});
+
+test("sexp: string containing escaped quote", () => {
+  const result = tokenize('("\\"" 99)');
+  expect(result.length).equal(4);
+  expect(result[0]).equal("(");
+  expect(result[1]).equal('"\\""');
+  expect(result[2]).equal("99");
+  expect(result[3]).equal(")");
+});
+
+test("sexp: string containing backslash-backslash", () => {
+  const result = tokenize('("\\\\" 50)');
+  expect(result.length).equal(4);
+  expect(result[0]).equal("(");
+  expect(result[1]).equal('"\\\\"');
+  expect(result[2]).equal("50");
+  expect(result[3]).equal(")");
+});
+
+test("sexp: multiple null-escape merge pairs", () => {
+  // A bare backslash must be escaped as \\\\ in the S-expression
+  const result = tokenize('(merges ("\\\\" "0") ("\\0" "0") ("\\00" "\\00"))');
+  expect(result.length).equal(15);
+  expect(result[0]).equal("(");
+  expect(result[1]).equal("merges");
+  // ("\\\\" "0") — backslash token
+  expect(result[2]).equal("(");
+  expect(result[3]).equal('"\\\\"');
+  expect(result[4]).equal('"0"');
+  expect(result[5]).equal(")");
+  // ("\\0" "0")
+  expect(result[6]).equal("(");
+  expect(result[7]).equal('"\\0"');
+  expect(result[8]).equal('"0"');
+  expect(result[9]).equal(")");
+  // ("\\00" "\\00")
+  expect(result[10]).equal("(");
+  expect(result[11]).equal('"\\00"');
+  expect(result[12]).equal('"\\00"');
+  expect(result[13]).equal(")");
+});
+
+test("sexp: token containing parens as string", () => {
+  const result = tokenize('("(" 0)');
+  expect(result.length).equal(4);
+  expect(result[0]).equal("(");
+  expect(result[1]).equal('"("');
+  expect(result[2]).equal("0");
+  expect(result[3]).equal(")");
+});
+
+test("sexp: token containing semicolons as string", () => {
+  const result = tokenize('(";;" 42)');
+  expect(result.length).equal(4);
+  expect(result[0]).equal("(");
+  expect(result[1]).equal('";;"');
+  expect(result[2]).equal("42");
+  expect(result[3]).equal(")");
+});
+
+test("sexp: multiline format", () => {
+  const result = tokenize('(merges\n  ("a" "b")\n  ("c" "d")\n)');
+  expect(result.length).equal(11);
+  expect(result[0]).equal("(");
+  expect(result[1]).equal("merges");
+  expect(result[2]).equal("(");
+  expect(result[3]).equal('"a"');
+  expect(result[4]).equal('"b"');
+  expect(result[5]).equal(")");
+  expect(result[6]).equal("(");
+  expect(result[7]).equal('"c"');
+  expect(result[8]).equal('"d"');
+  expect(result[9]).equal(")");
+  expect(result[10]).equal(")");
+});
+
+test("sexp: real BPE token $~lib/memory/__stack_pointer", () => {
+  const result = tokenize('("$~lib/memory/__stack_pointer" 100)');
+  expect(result.length).equal(4);
+  expect(result[0]).equal("(");
+  expect(result[1]).equal('"$~lib/memory/__stack_pointer"');
+  expect(result[2]).equal("100");
+  expect(result[3]).equal(")");
+});
+
+test("sexp: empty string token", () => {
+  const result = tokenize('("" 0)');
+  expect(result.length).equal(4);
+  expect(result[0]).equal("(");
+  expect(result[1]).equal('""');
+  expect(result[2]).equal("0");
+  expect(result[3]).equal(")");
+});
+
+test("sexp: string with spaces", () => {
+  const result = tokenize('("hello world" 5)');
+  expect(result.length).equal(4);
+  expect(result[0]).equal("(");
+  expect(result[1]).equal('"hello world"');
+  expect(result[2]).equal("5");
+  expect(result[3]).equal(")");
+});

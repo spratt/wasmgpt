@@ -4,7 +4,9 @@ import {
   trainBpe, applyMerges, bpeEncodeToken,
   buildBpeVocab, getBpeNextId,
   bpeVocab, unkId,
-  serializeMerges, parseMerges,
+  serializeMerges, parseMerges, parseVocab,
+  escapeForSexp, unescapeFromSexp, stripQuotes,
+  serializeVocab,
 } from "../src/bpe";
 import { initVocabulary, getNextId } from "../src/vocabulary";
 
@@ -220,18 +222,54 @@ test("bpeEncodeToken empty token", () => {
   expect(ids.length).equal(0);
 });
 
+// ===== escapeForSexp / unescapeFromSexp / stripQuotes =====
+
+test("escapeForSexp escapes backslash", () => {
+  expect(escapeForSexp("a\\b")).equal("a\\\\b");
+});
+
+test("escapeForSexp escapes quote", () => {
+  expect(escapeForSexp('say "hi"')).equal('say \\"hi\\"');
+});
+
+test("escapeForSexp no-op for plain string", () => {
+  expect(escapeForSexp("hello")).equal("hello");
+});
+
+test("unescapeFromSexp reverses backslash", () => {
+  expect(unescapeFromSexp("a\\\\b")).equal("a\\b");
+});
+
+test("unescapeFromSexp reverses quote", () => {
+  expect(unescapeFromSexp('say \\"hi\\"')).equal('say "hi"');
+});
+
+test("stripQuotes removes surrounding quotes", () => {
+  expect(stripQuotes('"hello"')).equal("hello");
+});
+
+test("stripQuotes returns unquoted string unchanged", () => {
+  expect(stripQuotes("hello")).equal("hello");
+});
+
 // ===== serializeMerges / parseMerges =====
 
-test("serializeMerges produces tab-separated lines", () => {
+test("serializeMerges produces S-expression", () => {
   const merges: Array<Array<string>> = [["A", "B"], ["AB", "C"]];
   const result = serializeMerges(merges);
-  expect(result).equal("A\tB\nAB\tC\n");
+  expect(result).equal('(merges\n  ("A" "B")\n  ("AB" "C"))\n');
 });
 
 test("serializeMerges empty merges", () => {
   const merges = new Array<Array<string>>();
   const result = serializeMerges(merges);
-  expect(result).equal("");
+  expect(result).equal("(merges)\n");
+});
+
+test("serializeMerges escapes backslash tokens", () => {
+  const merges: Array<Array<string>> = [["\\", "0"]];
+  const result = serializeMerges(merges);
+  expect(result).equal('(merges\n  ("\\\\" "0"))\n');
 });
 
 test("parseMerges round-trip", () => {
@@ -247,16 +285,95 @@ test("parseMerges round-trip", () => {
   expect(parsed[2][1]).equal("a");
 });
 
-test("parseMerges skips empty lines", () => {
-  const text = "A\tB\n\nAB\tC\n";
-  const parsed = parseMerges(text);
-  expect(parsed.length).equal(2);
+test("parseMerges round-trip with backslash and quote tokens", () => {
+  const original: Array<Array<string>> = [["\\", "0"], ["\\0", "0"], ["\"", "x"]];
+  const serialized = serializeMerges(original);
+  const parsed = parseMerges(serialized);
+  expect(parsed.length).equal(3);
+  expect(parsed[0][0]).equal("\\");
+  expect(parsed[0][1]).equal("0");
+  expect(parsed[1][0]).equal("\\0");
+  expect(parsed[1][1]).equal("0");
+  expect(parsed[2][0]).equal("\"");
+  expect(parsed[2][1]).equal("x");
 });
 
-test("parseMerges handles no trailing newline", () => {
-  const text = "A\tB\nAB\tC";
-  const parsed = parseMerges(text);
-  expect(parsed.length).equal(2);
-  expect(parsed[1][0]).equal("AB");
-  expect(parsed[1][1]).equal("C");
+test("parseMerges with \\00 tokens like real merges file", () => {
+  const original: Array<Array<string>> = [
+    ["\\", "0"],
+    ["\\0", "0"],
+    ["\\00", "\\00"],
+    ["\\00\\00", "\\00\\00"],
+    ["l", "o"],
+    ["lo", "cal"],
+  ];
+  const serialized = serializeMerges(original);
+  const parsed = parseMerges(serialized);
+  expect(parsed.length).equal(6);
+  expect(parsed[0][0]).equal("\\");
+  expect(parsed[0][1]).equal("0");
+  expect(parsed[1][0]).equal("\\0");
+  expect(parsed[1][1]).equal("0");
+  expect(parsed[2][0]).equal("\\00");
+  expect(parsed[2][1]).equal("\\00");
+  expect(parsed[3][0]).equal("\\00\\00");
+  expect(parsed[3][1]).equal("\\00\\00");
+  expect(parsed[4][0]).equal("l");
+  expect(parsed[4][1]).equal("o");
+  expect(parsed[5][0]).equal("lo");
+  expect(parsed[5][1]).equal("cal");
+});
+
+test("parseMerges with many entries", () => {
+  const original = new Array<Array<string>>();
+  for (let i = 0; i < 100; i++) {
+    original.push(["a" + i.toString(), "b" + i.toString()]);
+  }
+  const serialized = serializeMerges(original);
+  const parsed = parseMerges(serialized);
+  expect(parsed.length).equal(100);
+  expect(parsed[0][0]).equal("a0");
+  expect(parsed[99][0]).equal("a99");
+});
+
+test("parseMerges round-trip reproduces actual first merges", () => {
+  // Reproduce the exact first entries from the real merges.sexp
+  const original: Array<Array<string>> = [
+    ["\\", "0"],
+    ["\\0", "0"],
+    ["\\00", "\\00"],
+    ["\\00\\00", "\\00\\00"],
+    ["l", "o"],
+    ["lo", "cal"],
+    ["i", "3"],
+    ["i3", "2"],
+    [",", "\\00"],
+    ["$", "~"],
+  ];
+  const serialized = serializeMerges(original);
+  const parsed = parseMerges(serialized);
+  expect(parsed.length).equal(10);
+  for (let i = 0; i < 10; i++) {
+    expect(parsed[i][0]).equal(original[i][0]);
+    expect(parsed[i][1]).equal(original[i][1]);
+  }
+});
+
+// ===== parseVocab =====
+
+test("parseVocab parses S-expression vocab", () => {
+  const text = '(vocab\n  ("(" 0)\n  (")" 1)\n  ("module" 2))\n';
+  const result = parseVocab(text);
+  expect(result.size).equal(3);
+  expect(result.get("(")).equal(0);
+  expect(result.get(")")).equal(1);
+  expect(result.get("module")).equal(2);
+});
+
+test("parseVocab handles escaped tokens", () => {
+  const text = '(vocab\n  ("\\\\" 10)\n  ("\\"" 11))\n';
+  const result = parseVocab(text);
+  expect(result.size).equal(2);
+  expect(result.get("\\")).equal(10);
+  expect(result.get("\"")).equal(11);
 });
