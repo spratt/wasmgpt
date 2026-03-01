@@ -175,12 +175,12 @@ function stringLessThan(a: string, b: string): i32 {
   return 0;
 }
 
-export function buildBpeVocab(merges: Array<Array<string>>, startId: i32): void {
+export function buildBpeVocab(merges: Array<Array<string>>, startId: i32, corpusChars: Array<string> = []): void {
   bpeMerges = merges;
   bpeVocab = new Map<string, i32>();
   bpeNextId = startId;
 
-  // Collect all unique characters from merge rules
+  // Collect all unique characters from merge rules and corpus
   const charSet = new Map<string, bool>();
   for (let i = 0; i < merges.length; i++) {
     const merge = merges[i];
@@ -192,6 +192,9 @@ export function buildBpeVocab(merges: Array<Array<string>>, startId: i32): void 
     for (let j = 0; j < rightChars.length; j++) {
       charSet.set(rightChars[j], true);
     }
+  }
+  for (let i = 0; i < corpusChars.length; i++) {
+    charSet.set(corpusChars[i], true);
   }
 
   // Register single characters first, sorted

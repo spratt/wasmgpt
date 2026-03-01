@@ -207,12 +207,21 @@ test("bpeEncodeToken single char", () => {
   expect(ids[0]).equal(bpeVocab.get("A"));
 });
 
-test("bpeEncodeToken unknown char", () => {
+test("bpeEncodeToken unknown char without corpusChars", () => {
   const merges: Array<Array<string>> = [["A", "B"], ["AB", "C"]];
   buildBpeVocab(merges, 0);
   const ids = bpeEncodeToken("Z");
   expect(ids.length).equal(1);
   expect(ids[0]).equal(unkId);
+});
+
+test("bpeEncodeToken known char via corpusChars", () => {
+  const merges: Array<Array<string>> = [["A", "B"], ["AB", "C"]];
+  buildBpeVocab(merges, 0, ["Z"]);
+  const ids = bpeEncodeToken("Z");
+  expect(ids.length).equal(1);
+  expect(ids[0] != unkId).equal(true);
+  expect(bpeVocab.has("Z")).equal(true);
 });
 
 test("bpeEncodeToken empty token", () => {

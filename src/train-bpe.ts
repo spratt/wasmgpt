@@ -9,7 +9,7 @@ import { CommandLine, Console, FileSystem, Descriptor } from "as-wasi/assembly";
 import { readFileText } from "./io";
 import { tokenize } from "./lexer";
 import { vocab, getNextId, initVocabulary } from "./vocabulary";
-import { trainBpe, serializeMerges, buildBpeVocab, serializeVocab } from "./bpe";
+import { trainBpe, serializeMerges, buildBpeVocab, serializeVocab, tokenToChars } from "./bpe";
 
 // --- Parse CLI args ---
 
@@ -76,7 +76,21 @@ Console.error("Wrote build/merges.sexp\n");
 
 // --- Build BPE vocab and write vocab.sexp ---
 
-buildBpeVocab(merges, getNextId());
+// Collect all unique characters from unknown tokens so every character
+// gets a BPE ID, even if it never participated in a merge rule.
+const allChars = new Array<string>();
+const charSeen = new Map<string, bool>();
+for (let i: i32 = 0; i < unknowns.length; i++) {
+  const chars = tokenToChars(unknowns[i]);
+  for (let j: i32 = 0; j < chars.length; j++) {
+    if (!charSeen.has(chars[j])) {
+      charSeen.set(chars[j], true);
+      allChars.push(chars[j]);
+    }
+  }
+}
+
+buildBpeVocab(merges, getNextId(), allChars);
 
 const vocabSexp = serializeVocab();
 const vocabFd = FileSystem.open("build/vocab.sexp", "w");

@@ -8,7 +8,7 @@ import { CommandLine, Console, FileSystem, Descriptor } from "as-wasi/assembly";
 import { readFileText } from "./io";
 import { tokenize } from "./lexer";
 import { vocab, getNextId, getBosId, initVocabulary } from "./vocabulary";
-import { buildBpeVocab, bpeEncodeToken, parseMerges, getBpeNextId } from "./bpe";
+import { buildBpeVocab, bpeEncodeToken, parseMerges, getBpeNextId, tokenToChars } from "./bpe";
 import {
   initModel, gpt, stateDict, params, vocabSize,
   setHyperparams, getNEmbd, getNLayer, getNHead, getBlockSize,
@@ -91,8 +91,6 @@ if (mergesText === null) {
 }
 const merges = parseMerges(mergesText as string);
 const pass1Size = getNextId();
-buildBpeVocab(merges, pass1Size);
-Console.error("vocabulary: " + pass1Size.toString() + " pass1, " + getBpeNextId().toString() + " total\n");
 
 // ===== Read and tokenize corpus =====
 
@@ -109,6 +107,25 @@ if (corpusText === null) {
 
 const tokens = tokenize(corpusText as string);
 Console.error("corpus: " + tokens.length.toString() + " tokens\n");
+
+// Collect all unique characters from unknown tokens so every character
+// gets a BPE ID, even if it never participated in a merge rule.
+const corpusChars = new Array<string>();
+const charSeen = new Map<string, bool>();
+for (let i: i32 = 0; i < tokens.length; i++) {
+  if (!vocab.has(tokens[i])) {
+    const chars = tokenToChars(tokens[i]);
+    for (let j: i32 = 0; j < chars.length; j++) {
+      if (!charSeen.has(chars[j])) {
+        charSeen.set(chars[j], true);
+        corpusChars.push(chars[j]);
+      }
+    }
+  }
+}
+
+buildBpeVocab(merges, pass1Size, corpusChars);
+Console.error("vocabulary: " + pass1Size.toString() + " pass1, " + getBpeNextId().toString() + " total\n");
 
 // Encode tokens to IDs
 const allIds = new Array<i32>();
