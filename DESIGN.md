@@ -230,9 +230,9 @@ The attention weighted sum uses `OP_SCALE` (vector * scalar tensor) instead of `
 
 ### Training pipeline (`src/train.ts`)
 
-WASI CLI program: `wasmtime --dir . build/train.wasm <corpus.wat> <merges.sexp> [numSteps]`
+WASI CLI program: `wasmtime --dir . build/train.wasm <merges.sexp> <corpus1.wat> [corpus2.wat] ... [numSteps]`
 
-**Data loading:** initVocabulary → parseMerges → buildBpeVocab → tokenize corpus → encode tokens to IDs via vocab lookup (Pass 1) or bpeEncodeToken (Pass 2).
+**Data loading:** initVocabulary → parseMerges → tokenize all corpus files → collect unique characters from unknowns → buildBpeVocab (with corpusChars) → encode all tokens to IDs via vocab lookup (Pass 1) or bpeEncodeToken (Pass 2). Each corpus file is wrapped with BOS on both sides in the encoded ID sequence.
 
 **Training configuration:** Read from `config.sexp` at startup via `parseConfig()`, with fallback defaults: `train-seq-len` (256), `learning-rate` (0.001), `beta1` (0.9), `beta2` (0.999), `eps-adam` (1e-8), `checkpoint-interval` (10). Model architecture hyperparameters are also loaded from config and applied via `setHyperparams()` before model initialization.
 
@@ -316,6 +316,7 @@ lexer.ts
   └─ vocabulary.ts
   └─ bpe.ts (imports lexer for S-expression parsing)
   └─ config.ts (imports lexer for S-expression parsing)
+  └─ tokenize.ts (browser-facing tokenizer library)
   └─ train-bpe.ts
 io.ts (safe file reading, bypasses as-wasi readString bug)
 tensor.ts (independent)
@@ -381,28 +382,39 @@ A hybrid tokenizer handles both classes, following the same two-pass design as [
 
 BPE merge rules must be trained on a corpus before model training can begin. The pipeline is:
 
-1. **Build** — compile wasmgpt's AssemblyScript source to WASM (`npm run build`)
-2. **Disassemble** — convert to WAT with offset map (`npm run wat`, requires `wasm2wat` on PATH)
-3. **Annotate** — inject source comments via [watnot](https://github.com/spratt/watnot) (`npm run annotate`, watnot is a git submodule)
-4. **Train** — run `src/train-bpe.ts` on the annotated WAT to learn merge rules (`npm run train:bpe`)
+1. **Build** — compile all entry points to WASM with source maps (`npm run corpus`)
+2. **Disassemble** — convert each to WAT with offset map (requires `wasm2wat` on PATH)
+3. **Annotate** — inject source comments via [watnot](https://github.com/spratt/watnot) (watnot is a git submodule)
+4. **Train** — run `src/train-bpe.ts` on all annotated WAT files to learn merge rules (`npm run train:bpe`)
 
-The full pipeline is chained as `npm run train:bpe`, which runs all four steps and writes merge rules to `build/merges.sexp` and vocabulary to `build/vocab.sexp`.
+The full pipeline is chained as `npm run train:bpe`, which runs steps 1–3 for both wasmgpt and watnot, then trains BPE on the combined corpus. Merge rules are written to `build/merges.sexp` and vocabulary to `build/vocab.sexp`.
 
-`src/train-bpe.ts` is a WASI CLI program (following watnot's I/O pattern) that:
-- Reads a WAT file path from CLI args
-- Tokenizes with the lexer, partitions tokens into known (in `vocab`) and unknown
-- Calls `trainBpe(unknowns, numMerges)` (default 256 merges)
+**Multi-file corpus:** The corpus is assembled from multiple annotated WAT files. Each entry point compiles to a separate `.wasm` with its own source map, covering only the files it transitively imports:
+
+| Entry point     | Source files in map |
+|-----------------|---------------------|
+| `tokenize.ts`   | tokenize, lexer, vocabulary, bpe |
+| `train-bpe.ts`  | train-bpe, lexer, vocabulary, bpe, io, config |
+| `train.ts`      | train, lexer, vocabulary, bpe, io, config, model, tensor, checkpoint |
+| `infer.ts`      | infer, lexer, vocabulary, bpe, io, config, model, tensor, checkpoint |
+
+The union of all 4 covers all 12 source files. Shared files (lexer, bpe, vocabulary) appear in multiple maps — their comments are injected independently into each annotated WAT, so the model sees the same functions in different call-graph contexts. watnot has a single entry point covering all 5 of its source files.
+
+`src/train-bpe.ts` is a WASI CLI program that:
+- Accepts multiple WAT file paths as CLI args
+- Tokenizes each file with the lexer, partitions tokens into known (in `vocab`) and unknown
+- Collects all unique characters from unknowns so every character gets a BPE ID
+- Calls `trainBpe(unknowns, numMerges)` on the combined unknown tokens (numMerges configurable via `config.sexp`)
 - Writes merge rules to `build/merges.sexp` and vocabulary to `build/vocab.sexp`
 - Writes diagnostic statistics to stderr
 
 **Persistence format:** S-expressions with quoted strings and backslash escaping. Merges: `(merges ("left" "right") ...)`. Vocabulary: `(vocab ("token" id) ...)`. Parsed by the existing WAT lexer via `parseMerges()` and `parseVocab()`, serialized by `serializeMerges()` and `serializeVocab()`. S-expressions were chosen over TSV because BPE tokens can contain `\0`, `\n`, and `\t` which corrupt delimiter-based formats.
 
-**Initial corpus statistics** (self-referential build of wasmgpt):
-- 11,849 lines of annotated WAT
-- 53,102 total tokens after lexing
-- 42,187 known tokens (79.4%, in Pass 1 vocabulary)
-- 10,915 unknown tokens (20.6%, encoded by BPE)
-- 256 merge rules learned
+**Corpus statistics** (5 annotated WAT files: 4 wasmgpt entry points + watnot):
+- 488,220 total tokens after lexing
+- 387,909 known tokens (79.5%, in Pass 1 vocabulary)
+- 100,311 unknown tokens (20.5%, encoded by BPE)
+- 256 merge rules learned (configurable via `num-merges` in `config.sexp`)
 
 Comments are stripped by the lexer, so watnot's injected comments don't affect tokenization. The annotations are preserved in the corpus for future use when comment-aware training is implemented.
 

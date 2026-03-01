@@ -18,7 +18,7 @@ export function readFileText(desc: Descriptor): string | null {
   const readBuf = new ArrayBuffer(4);
   const readPtr = changetype<usize>(readBuf);
 
-  let result = "";
+  const chunks = new Array<string>();
 
   while (true) {
     store<u32>(iovPtr, bufPtr, 0);
@@ -31,10 +31,8 @@ export function readFileText(desc: Descriptor): string | null {
     const bytesRead = load<u32>(readPtr);
     if (bytesRead == 0) break;
 
-    for (let i: u32 = 0; i < bytesRead; i++) {
-      result += String.fromCharCode(load<u8>(bufPtr + i) as i32);
-    }
+    chunks.push(String.UTF8.decodeUnsafe(bufPtr, bytesRead, false));
   }
 
-  return result;
+  return chunks.join("");
 }
