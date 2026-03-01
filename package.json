@@ -3,8 +3,8 @@
   "version": "0.1.0",
   "description": "A GPT trained on WebAssembly",
   "scripts": {
-    "build": "asc src/index.ts --outFile build/wasmgpt.wasm --config node_modules/@assemblyscript/wasi-shim/asconfig.json --debug --sourceMap",
-    "build:release": "asc src/index.ts --outFile build/wasmgpt.wasm --config node_modules/@assemblyscript/wasi-shim/asconfig.json --optimize --sourceMap",
+    "build:tokenize": "asc src/tokenize.ts --outFile build/tokenize.wasm --config node_modules/@assemblyscript/wasi-shim/asconfig.json --debug --sourceMap",
+    "build:tokenize:release": "asc src/tokenize.ts --outFile build/tokenize.wasm --config node_modules/@assemblyscript/wasi-shim/asconfig.json --optimize --sourceMap",
     "build:train-bpe": "asc src/train-bpe.ts --outFile build/train-bpe.wasm --config node_modules/@assemblyscript/wasi-shim/asconfig.json --debug --sourceMap",
     "build:train": "asc src/train.ts --outFile build/train.wasm --config node_modules/@assemblyscript/wasi-shim/asconfig.json --debug --sourceMap",
     "build:infer": "asc src/infer.ts --outFile build/infer.wasm --config node_modules/@assemblyscript/wasi-shim/asconfig.json --debug --sourceMap",
@@ -12,21 +12,21 @@
     "bench:io": "npm run build:bench-io && wasmtime --dir . build/bench-io.wasm",
     "setup:watnot": "cd watnot && npm install && npm run build",
 
-    "wat:index": "wasm2wat build/wasmgpt.wasm --fold-exprs --output build/wasmgpt.wat --offset-map build/wasmgpt.offsets.json",
+    "wat:tokenize": "wasm2wat build/tokenize.wasm --fold-exprs --output build/tokenize.wat --offset-map build/tokenize.offsets.json",
     "wat:train-bpe": "wasm2wat build/train-bpe.wasm --fold-exprs --output build/train-bpe.wat --offset-map build/train-bpe.offsets.json",
     "wat:train": "wasm2wat build/train.wasm --fold-exprs --output build/train.wat --offset-map build/train.offsets.json",
     "wat:infer": "wasm2wat build/infer.wasm --fold-exprs --output build/infer.wat --offset-map build/infer.offsets.json",
 
-    "annotate:index": "wasmtime --dir . watnot/build/watnot.wasm build/wasmgpt.wasm.map build/wasmgpt.wat build/wasmgpt.offsets.json src/index.ts src/lexer.ts src/vocabulary.ts src/bpe.ts > build/wasmgpt.annotated.wat",
+    "annotate:tokenize": "wasmtime --dir . watnot/build/watnot.wasm build/tokenize.wasm.map build/tokenize.wat build/tokenize.offsets.json src/tokenize.ts src/lexer.ts src/vocabulary.ts src/bpe.ts > build/tokenize.annotated.wat",
     "annotate:train-bpe": "wasmtime --dir . watnot/build/watnot.wasm build/train-bpe.wasm.map build/train-bpe.wat build/train-bpe.offsets.json src/train-bpe.ts src/lexer.ts src/vocabulary.ts src/bpe.ts src/io.ts > build/train-bpe.annotated.wat",
     "annotate:train": "wasmtime --dir . watnot/build/watnot.wasm build/train.wasm.map build/train.wat build/train.offsets.json src/train.ts src/lexer.ts src/vocabulary.ts src/bpe.ts src/io.ts src/config.ts src/model.ts src/tensor.ts src/checkpoint.ts > build/train.annotated.wat",
     "annotate:infer": "wasmtime --dir . watnot/build/watnot.wasm build/infer.wasm.map build/infer.wat build/infer.offsets.json src/infer.ts src/lexer.ts src/vocabulary.ts src/bpe.ts src/io.ts src/config.ts src/model.ts src/tensor.ts src/checkpoint.ts > build/infer.annotated.wat",
 
-    "corpus": "npm run build && npm run build:train-bpe && npm run build:train && npm run build:infer && npm run wat:index && npm run wat:train-bpe && npm run wat:train && npm run wat:infer && npm run annotate:index && npm run annotate:train-bpe && npm run annotate:train && npm run annotate:infer",
+    "corpus": "npm run build:tokenize && npm run build:train-bpe && npm run build:train && npm run build:infer && npm run wat:tokenize && npm run wat:train-bpe && npm run wat:train && npm run wat:infer && npm run annotate:tokenize && npm run annotate:train-bpe && npm run annotate:train && npm run annotate:infer",
     "corpus:watnot": "cd watnot && npm run build && npm run wat && npm run annotate",
 
-    "train:bpe": "npm run corpus && npm run corpus:watnot && npm run build:train-bpe && wasmtime --dir . build/train-bpe.wasm build/wasmgpt.annotated.wat build/train-bpe.annotated.wat build/train.annotated.wat build/infer.annotated.wat watnot/build/watnot-annotated.wat",
-    "train": "npm run build:train && wasmtime --dir . build/train.wasm build/merges.sexp build/wasmgpt.annotated.wat build/train-bpe.annotated.wat build/train.annotated.wat build/infer.annotated.wat watnot/build/watnot-annotated.wat",
+    "train:bpe": "npm run corpus && npm run corpus:watnot && npm run build:train-bpe && wasmtime --dir . build/train-bpe.wasm build/tokenize.annotated.wat build/train-bpe.annotated.wat build/train.annotated.wat build/infer.annotated.wat watnot/build/watnot-annotated.wat",
+    "train": "npm run build:train && wasmtime --dir . build/train.wasm build/merges.sexp build/tokenize.annotated.wat build/train-bpe.annotated.wat build/train.annotated.wat build/infer.annotated.wat watnot/build/watnot-annotated.wat",
     "infer": "npm run build:infer && wasmtime --dir . build/infer.wasm build/vocab.sexp",
 
     "clean:model": "rm -f build/model.bin",

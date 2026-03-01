@@ -56,14 +56,12 @@ npm test
 
 | Script | Description |
 |---|---|
-| `build` | Compile `src/index.ts` to `build/wasmgpt.wasm` (debug + source map) |
-| `build:release` | Compile with optimizations |
+| `build:tokenize` | Compile `src/tokenize.ts` to `build/tokenize.wasm` (debug + source map) |
+| `build:tokenize:release` | Compile with optimizations |
 | `build:train-bpe` | Compile `src/train-bpe.ts` to `build/train-bpe.wasm` |
 | `setup:watnot` | Install and build the watnot submodule |
-| `wat` | Disassemble `build/wasmgpt.wasm` to WAT with offset map |
-| `annotate` | Inject source comments into the WAT using watnot |
-| `corpus` | Full pipeline: build + wat + annotate |
-| `train:bpe` | Full pipeline: corpus + build train-bpe + train BPE merge rules |
+| `corpus` | Build, disassemble, and annotate all entry points |
+| `train:bpe` | Full pipeline: corpus + train BPE merge rules |
 | `test` | Run unit tests |
 
 ## Design
