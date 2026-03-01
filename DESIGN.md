@@ -194,12 +194,11 @@ AssemblyScript has no closures, so we cannot store a backward function on each n
 
 ### GPT-2 model (`src/model.ts`)
 
-**Hyperparameters** (same as consgpt.lisp Tiny config):
-- `N_EMBD = 64`, `N_LAYER = 2`, `N_HEAD = 4`, `HEAD_DIM = 16`, `BLOCK_SIZE = 256`
+**Hyperparameters:** Stored as private module variables with getter functions (`getNEmbd()`, `getNLayer()`, `getNHead()`, `getHeadDim()`, `getBlockSize()`). Defaults match consgpt.lisp's Tiny config: nEmbd=64, nLayer=2, nHead=4, headDim=16, blockSize=256. At runtime, `train.ts` and `infer.ts` call `setHyperparams()` with values read from `config.sexp`.
 
 **PRNG:** Same LCG as consgpt.lisp — `state = (1664525 * state + 1013904223) & 0xFFFFFFFF`, seeded at 42. Box-Muller transform for Gaussian initialization.
 
-**Weight initialization:** `makeMatrix(nout, nin)` creates a [nout, nin] Tensor filled with Gaussian * 0.02.
+**Weight initialization:** `makeMatrix(nout, nin)` creates a [nout, nin] Tensor filled with Gaussian * `initScale` (configurable, default 0.02).
 
 **State dictionary:** `stateDict: Map<string, Tensor>` with 14 weight tensors:
 - `wte`: [vocabSize, nEmbd], `wpe`: [blockSize, nEmbd]
@@ -235,8 +234,7 @@ WASI CLI program: `wasmtime --dir . build/train.wasm <corpus.wat> <merges.sexp> 
 
 **Data loading:** initVocabulary → parseMerges → buildBpeVocab → tokenize corpus → encode tokens to IDs via vocab lookup (Pass 1) or bpeEncodeToken (Pass 2).
 
-**Training configuration** (same as consgpt.lisp):
-- `TRAIN_SEQ_LEN = 32`, `LEARNING_RATE = 0.001`, `BETA1 = 0.9`, `BETA2 = 0.999`, `EPS_ADAM = 1e-8`, `CHECKPOINT_INTERVAL = 10`
+**Training configuration:** Read from `config.sexp` at startup via `parseConfig()`, with fallback defaults: `train-seq-len` (256), `learning-rate` (0.001), `beta1` (0.9), `beta2` (0.999), `eps-adam` (1e-8), `checkpoint-interval` (10). Model architecture hyperparameters are also loaded from config and applied via `setHyperparams()` before model initialization.
 
 **Adam optimizer:** Per-tensor `Map<string, StaticArray<f32>>` for first moment (m) and second moment (v). Linear LR decay relative to current run. Bias correction uses absolute step count. Gradients zeroed after update.
 
@@ -252,7 +250,9 @@ WASI CLI program: `wasmtime --dir . build/infer.wasm <vocab.sexp> [numSamples] [
 
 **Prompt encoding:** If a prompt is provided, it is tokenized by the lexer and encoded via simple `tokenToId` lookup. Unknown prompt tokens are skipped with a warning. Each prompt token is fed through `gpt()` one at a time, building the KV cache, with graph detachment after each position.
 
-**Autoregressive generation:** After the prompt (or from token `(` if no prompt), the loop runs until `BLOCK_SIZE`:
+**BOS token:** `<BOS>` is a Pass 1 control token (ID 568) registered in `vocabulary.ts`. Following microgpt.py's approach, the training corpus is wrapped with BOS on both sides (`[BOS] + corpus + [BOS]`), teaching the model that BOS → first token and last token → BOS. Inference starts from BOS and stops when BOS is generated, producing variable-length output. consgpt.lisp registers BOS but does not inject it into training data — we follow microgpt's approach instead because without BOS in training data, the model has no signal to learn when to stop generating.
+
+**Autoregressive generation:** Starting from BOS, the loop runs until the model generates BOS again or reaches `BLOCK_SIZE`:
 
 ```
 logits = gpt(tokenId, posId, cacheKeys, cacheVals)
@@ -260,6 +260,7 @@ scaled = divScalar(logits, temperature)
 probs = softmax(scaled)
 nextId = weightedChoice(probs.data)
 detachKvCache(cacheKeys, cacheVals)
+if nextId == BOS_ID: break
 ```
 
 Temperature (default 0.8) controls sampling randomness — lower values concentrate probability mass on the most likely tokens.
@@ -274,8 +275,8 @@ Temperature (default 0.8) controls sampling randomness — lower values concentr
 
 | Aspect | consgpt.lisp | wasmgpt |
 |---|---|---|
-| Start token | BOS (special token after BPE vocab) | First token of prompt, or `(` if no prompt |
-| Stop condition | BOS token generated | BLOCK_SIZE reached (no BOS/EOS token) |
+| Start token | BOS (after BPE vocab, not in training data) | BOS (Pass 1 ID 568, wrapped in training data) |
+| Stop condition | BOS token generated | BOS generated or BLOCK_SIZE reached |
 | Temperature | 0.8 (scalar Val division) | 0.8 (tensor divScalar) |
 | Decode spacing | Lisp-specific (no space after `(`, `'`, `` ` ``, `#'`, `#(`, `#\\`) | WAT-specific (no space after `(`, no space before `)`) |
 | Graph detachment | Nil out children/local-grads on scalar Val nodes | Clear children arrays on Tensor nodes |
@@ -300,19 +301,28 @@ Binary format (`build/model.bin`) — compact, natural for WASM, trivial to read
 
 Uses raw WASI `fd_write`/`fd_read` with `changetype<usize>(staticArray)` for zero-copy binary I/O. On load, hyperparameters are validated against the current model config. The file is overwritten on each save.
 
+### Configuration (`config.sexp`, `src/config.ts`)
+
+All tunable hyperparameters are stored in `config.sexp`, an S-expression file in the project root. Both `train.ts` and `infer.ts` load it at startup via `parseConfig()`, which reuses the existing WAT lexer to tokenize the file and extracts `(key value)` pairs into a `Map<string, f64>`. Typed accessors `configI32()` and `configF32()` retrieve values with fallback defaults.
+
+Parameters include model architecture (n-embd, n-layer, n-head, block-size, init-scale), training (train-seq-len, learning-rate, beta1, beta2, eps-adam, checkpoint-interval), and inference (temperature). Each parameter in the file has a comment explaining its purpose and the corresponding GPT-2 value for reference.
+
+The model's default hyperparameters (in `model.ts`) serve as the single source of truth for fallback values — `train.ts` and `infer.ts` pass getter results (e.g. `getNEmbd()`) as defaults to `configI32()`/`configF32()`, avoiding hardcoded literals in multiple places.
+
 ### Module dependency order
 
 ```
 lexer.ts
   └─ vocabulary.ts
   └─ bpe.ts (imports lexer for S-expression parsing)
+  └─ config.ts (imports lexer for S-expression parsing)
   └─ train-bpe.ts
 io.ts (safe file reading, bypasses as-wasi readString bug)
 tensor.ts (independent)
 model.ts (depends on tensor)
 checkpoint.ts (depends on model)
-train.ts (depends on all above + io.ts)
-infer.ts (depends on model, checkpoint, bpe, io.ts)
+train.ts (depends on all above + io.ts + config.ts)
+infer.ts (depends on model, checkpoint, bpe, io.ts, config.ts)
 ```
 
 ---
@@ -508,6 +518,7 @@ The browser deployment target opens the possibility of distributed federated tra
 | BPE/vocab persistence | S-expressions with quoted strings | Parsed by existing WAT lexer; safe for tokens containing `\0`, `\n`, `\t` |
 | Checkpoint format | Binary (raw WASI fd_write/fd_read) | Zero-copy I/O via `changetype<usize>(staticArray)`; compact and natural for WASM |
 | Self-reference | Project source in corpus | Elegant bootstrapping; increases corpus coverage of idiomatic WAT |
+| Configuration | S-expression file (`config.sexp`) parsed by WAT lexer | All hyperparameters tunable without recompilation; reuses existing lexer; comments document GPT-2 reference values |
 
 ---
 
@@ -548,5 +559,4 @@ Key constraints encountered during implementation:
 - How should the tokenizer handle WASM 3.0 extensions vs. MVP instructions — unified vocabulary or versioned?
 - What is a reasonable model size given browser memory constraints for inference?
 - How to handle the structured block nesting in WAT (blocks must be well-formed) — should this be enforced at the tokenizer level or left to the model to learn?
-- Should we add a BOS/EOS token to wasmgpt's vocabulary? consgpt.lisp uses BOS to signal both start and end of generation. Without it, inference runs until BLOCK_SIZE. Adding one would require retraining.
 - Should we support top-k or top-p (nucleus) sampling? Temperature-only is simpler and matches consgpt.lisp.

@@ -4,7 +4,7 @@ import { tokenize } from "../src/lexer";
 import { buildBpeVocab, bpeEncodeToken, getBpeNextId } from "../src/bpe";
 import {
   initModel, stateDict, params, vocabSize, gpt,
-  N_EMBD, N_LAYER, N_HEAD, BLOCK_SIZE,
+  getNEmbd, getNLayer, getNHead, getBlockSize,
 } from "../src/model";
 import { Tensor, backward, crossEntropy, divScalar, tensorSum, concat } from "../src/tensor";
 
@@ -52,9 +52,9 @@ test("integration: forward pass + crossEntropy produces finite loss", () => {
 
   // Forward pass over first few tokens
   const seqLen: i32 = ids.length < 8 ? ids.length - 1 : 7;
-  const cacheKeys = new Array<Array<Tensor>>(N_LAYER);
-  const cacheVals = new Array<Array<Tensor>>(N_LAYER);
-  for (let li: i32 = 0; li < N_LAYER; li++) {
+  const cacheKeys = new Array<Array<Tensor>>(getNLayer());
+  const cacheVals = new Array<Array<Tensor>>(getNLayer());
+  for (let li: i32 = 0; li < getNLayer(); li++) {
     cacheKeys[li] = new Array<Tensor>();
     cacheVals[li] = new Array<Tensor>();
   }
@@ -90,9 +90,9 @@ test("integration: backward produces non-zero gradients", () => {
 
   // Short sequence for speed
   const seqLen: i32 = 3;
-  const cacheKeys = new Array<Array<Tensor>>(N_LAYER);
-  const cacheVals = new Array<Array<Tensor>>(N_LAYER);
-  for (let li: i32 = 0; li < N_LAYER; li++) {
+  const cacheKeys = new Array<Array<Tensor>>(getNLayer());
+  const cacheVals = new Array<Array<Tensor>>(getNLayer());
+  for (let li: i32 = 0; li < getNLayer(); li++) {
     cacheKeys[li] = new Array<Tensor>();
     cacheVals[li] = new Array<Tensor>();
   }
@@ -137,9 +137,9 @@ test("integration: graph detached after backward", () => {
     }
   }
 
-  const cacheKeys = new Array<Array<Tensor>>(N_LAYER);
-  const cacheVals = new Array<Array<Tensor>>(N_LAYER);
-  for (let li: i32 = 0; li < N_LAYER; li++) {
+  const cacheKeys = new Array<Array<Tensor>>(getNLayer());
+  const cacheVals = new Array<Array<Tensor>>(getNLayer());
+  for (let li: i32 = 0; li < getNLayer(); li++) {
     cacheKeys[li] = new Array<Tensor>();
     cacheVals[li] = new Array<Tensor>();
   }

@@ -38,18 +38,36 @@ export function randomGaussian(): f32 {
 
 // ===== Hyperparameters =====
 
-export const N_EMBD: i32 = 64;
-export const N_LAYER: i32 = 2;
-export const N_HEAD: i32 = 4;
-export const HEAD_DIM: i32 = 16; // N_EMBD / N_HEAD
-export const BLOCK_SIZE: i32 = 256;
+let _nEmbd: i32 = 64;
+let _nLayer: i32 = 2;
+let _nHead: i32 = 4;
+let _headDim: i32 = 16;
+let _blockSize: i32 = 256;
+let _initScale: f32 = f32(0.02);
+
+export function getNEmbd(): i32 { return _nEmbd; }
+export function getNLayer(): i32 { return _nLayer; }
+export function getNHead(): i32 { return _nHead; }
+export function getHeadDim(): i32 { return _headDim; }
+export function getBlockSize(): i32 { return _blockSize; }
+
+export function setHyperparams(
+  nEmbd: i32, nLayer: i32, nHead: i32, blockSize: i32, initScale: f32
+): void {
+  _nEmbd = nEmbd;
+  _nLayer = nLayer;
+  _nHead = nHead;
+  _headDim = nEmbd / nHead;
+  _blockSize = blockSize;
+  _initScale = initScale;
+}
 
 // ===== Weight initialization =====
 
 export function makeMatrix(nout: i32, nin: i32): Tensor {
   const data = new StaticArray<f32>(nout * nin);
   for (let i: i32 = 0; i < nout * nin; i++) {
-    data[i] = randomGaussian() * f32(0.02);
+    data[i] = randomGaussian() * _initScale;
   }
   const shape = new StaticArray<i32>(2);
   shape[0] = nout;
@@ -73,17 +91,17 @@ export function initModel(vs: i32): void {
   vocabSize = vs;
   stateDict = new Map<string, Tensor>();
 
-  stateDict.set("wte", makeMatrix(vocabSize, N_EMBD));
-  stateDict.set("wpe", makeMatrix(BLOCK_SIZE, N_EMBD));
+  stateDict.set("wte", makeMatrix(vocabSize, _nEmbd));
+  stateDict.set("wpe", makeMatrix(_blockSize, _nEmbd));
 
-  for (let li: i32 = 0; li < N_LAYER; li++) {
+  for (let li: i32 = 0; li < _nLayer; li++) {
     const prefix = "layer" + li.toString() + ".";
-    stateDict.set(prefix + "attn_wq", makeMatrix(N_EMBD, N_EMBD));
-    stateDict.set(prefix + "attn_wk", makeMatrix(N_EMBD, N_EMBD));
-    stateDict.set(prefix + "attn_wv", makeMatrix(N_EMBD, N_EMBD));
-    stateDict.set(prefix + "attn_wo", makeMatrix(N_EMBD, N_EMBD));
-    stateDict.set(prefix + "mlp_fc1", makeMatrix(4 * N_EMBD, N_EMBD));
-    stateDict.set(prefix + "mlp_fc2", makeMatrix(N_EMBD, 4 * N_EMBD));
+    stateDict.set(prefix + "attn_wq", makeMatrix(_nEmbd, _nEmbd));
+    stateDict.set(prefix + "attn_wk", makeMatrix(_nEmbd, _nEmbd));
+    stateDict.set(prefix + "attn_wv", makeMatrix(_nEmbd, _nEmbd));
+    stateDict.set(prefix + "attn_wo", makeMatrix(_nEmbd, _nEmbd));
+    stateDict.set(prefix + "mlp_fc1", makeMatrix(4 * _nEmbd, _nEmbd));
+    stateDict.set(prefix + "mlp_fc2", makeMatrix(_nEmbd, 4 * _nEmbd));
   }
 
   // Collect all tensors in sorted key order for optimizer
@@ -118,7 +136,7 @@ export function gpt(
   let x = add(embedding(wte, tokenId), embedding(wpe, posId));
   x = rmsnorm(x, f32(1e-5));
 
-  for (let li: i32 = 0; li < N_LAYER; li++) {
+  for (let li: i32 = 0; li < _nLayer; li++) {
     const prefix = "layer" + li.toString() + ".";
     const attnWq = stateDict.get(prefix + "attn_wq");
     const attnWk = stateDict.get(prefix + "attn_wk");
@@ -140,13 +158,13 @@ export function gpt(
     cacheVals[li].push(v);
 
     // Multi-head attention
-    const headOuts = new Array<Tensor>(N_HEAD);
+    const headOuts = new Array<Tensor>(_nHead);
     const seqLen = cacheKeys[li].length;
-    const scaleFactor = Mathf.sqrt(f32(HEAD_DIM));
+    const scaleFactor = Mathf.sqrt(f32(_headDim));
 
-    for (let h: i32 = 0; h < N_HEAD; h++) {
-      const hs = h * HEAD_DIM;
-      const he = hs + HEAD_DIM;
+    for (let h: i32 = 0; h < _nHead; h++) {
+      const hs = h * _headDim;
+      const he = hs + _headDim;
       const qH = slice(q, hs, he);
 
       // Compute attention scores

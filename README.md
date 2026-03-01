@@ -7,6 +7,11 @@ A GPT-style language model trained on WebAssembly. Given a WAT prefix, the model
 
 Based on [consgpt.lisp](https://github.com/spratt/consgpt.lisp), a GPT trained on Common Lisp. WAT and Common Lisp are both S-expression languages, so the hybrid tokenizer architecture, model design, and training pipeline carry over with targeted changes.
 
+## References
+
+- Andrej Karpathy, [microgpt.py](https://gist.github.com/karpathy/77a5f3e9e5b1a1ca0bd68e4b82faa75e) — A minimal GPT training and inference implementation in ~200 lines of Python. The direct inspiration for consgpt.lisp, from which this project is derived.
+- Alec Radford, Jeffrey Wu, Rewon Child, David Luan, Dario Amodei, Ilya Sutskever, [Language Models are Unsupervised Multitask Learners](https://cdn.openai.com/better-language-models/language_models_are_unsupervised_multitask_learners.pdf) (2019) — The GPT-2 paper. Describes the architecture, BPE tokenization, and training approach that this project follows at a smaller scale.
+
 ## Prerequisites
 
 - [Node.js](https://nodejs.org/) (v22+)

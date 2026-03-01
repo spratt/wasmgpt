@@ -10,10 +10,11 @@ import { tokenize } from "./lexer";
 import { parseVocab } from "./bpe";
 import {
   initModel, gpt, stateDict, weightedChoice, detachKvCache,
-  N_LAYER, BLOCK_SIZE,
+  setHyperparams, getNEmbd, getNLayer, getNHead, getBlockSize,
 } from "./model";
 import { loadCheckpoint } from "./checkpoint";
 import { Tensor, softmax, divScalar } from "./tensor";
+import { parseConfig, configI32, configF32 } from "./config";
 
 // ===== Parse CLI args =====
 
@@ -29,9 +30,9 @@ let numSamples: i32 = 5;
 if (args.length >= 3) {
   numSamples = I32.parseInt(args[2]);
 }
-let temperature: f32 = f32(0.8);
+let cliTemperature: f32 = f32(-1.0);
 if (args.length >= 4) {
-  temperature = f32(parseFloat(args[3]));
+  cliTemperature = f32(parseFloat(args[3]));
 }
 let promptText = "";
 if (args.length >= 5) {
@@ -41,6 +42,31 @@ if (args.length >= 5) {
   }
   promptText = parts.join(" ");
 }
+
+// ===== Load configuration =====
+
+const configFd = FileSystem.open("config.sexp", "r");
+if (configFd === null) {
+  Console.error("Error: could not open config.sexp\n");
+  abort();
+}
+const configText = readFileText(configFd as Descriptor);
+if (configText === null) {
+  Console.error("Error: could not read config.sexp\n");
+  abort();
+}
+const config = parseConfig(configText as string);
+
+const nEmbd = configI32(config, "n-embd", getNEmbd());
+const nLayer = configI32(config, "n-layer", getNLayer());
+const nHead = configI32(config, "n-head", getNHead());
+const blockSize = configI32(config, "block-size", getBlockSize());
+const initScale = configF32(config, "init-scale", f32(0.02));
+setHyperparams(nEmbd, nLayer, nHead, blockSize, initScale);
+
+const temperature: f32 = cliTemperature > f32(0.0)
+  ? cliTemperature
+  : configF32(config, "temperature", f32(0.8));
 
 // ===== Load vocabulary from S-expression =====
 
@@ -150,9 +176,11 @@ function decodeIds(ids: Array<i32>): string {
 Console.error("inference: " + numSamples.toString() + " samples, temperature " + temperature.toString() + "\n");
 
 for (let s: i32 = 0; s < numSamples; s++) {
-  const cacheKeys = new Array<Array<Tensor>>(N_LAYER);
-  const cacheVals = new Array<Array<Tensor>>(N_LAYER);
-  for (let li: i32 = 0; li < N_LAYER; li++) {
+  const nLayerVal = getNLayer();
+  const blockSizeVal = getBlockSize();
+  const cacheKeys = new Array<Array<Tensor>>(nLayerVal);
+  const cacheVals = new Array<Array<Tensor>>(nLayerVal);
+  for (let li: i32 = 0; li < nLayerVal; li++) {
     cacheKeys[li] = new Array<Tensor>();
     cacheVals[li] = new Array<Tensor>();
   }
@@ -179,7 +207,7 @@ for (let s: i32 = 0; s < numSamples; s++) {
   }
 
   // Autoregressive generation
-  for (let p: i32 = posId; p < BLOCK_SIZE; p++) {
+  for (let p: i32 = posId; p < blockSizeVal; p++) {
     const logits = gpt(tokenId, p, cacheKeys, cacheVals);
     const scaled = divScalar(logits, temperature);
     const probs = softmax(scaled);

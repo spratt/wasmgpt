@@ -1,7 +1,7 @@
 import { test, expect } from "assemblyscript-unittest-framework/assembly";
 import {
   initModel, stateDict, params, numParams, vocabSize, gpt,
-  N_EMBD, N_LAYER, N_HEAD, HEAD_DIM, BLOCK_SIZE,
+  getNEmbd, getNLayer, getNHead, getHeadDim, getBlockSize,
   lcgState, randomGaussian, weightedChoice, detachKvCache,
 } from "../src/model";
 import { Tensor } from "../src/tensor";
@@ -9,12 +9,12 @@ import { Tensor } from "../src/tensor";
 // ===== Hyperparameters =====
 
 test("hyperparameters are correct", () => {
-  expect(N_EMBD).equal(64);
-  expect(N_LAYER).equal(2);
-  expect(N_HEAD).equal(4);
-  expect(HEAD_DIM).equal(16);
-  expect(BLOCK_SIZE).equal(256);
-  expect(N_EMBD).equal(N_HEAD * HEAD_DIM);
+  expect(getNEmbd()).equal(64);
+  expect(getNLayer()).equal(2);
+  expect(getNHead()).equal(4);
+  expect(getHeadDim()).equal(16);
+  expect(getBlockSize()).equal(256);
+  expect(getNEmbd()).equal(getNHead() * getHeadDim());
 });
 
 // ===== PRNG =====
@@ -39,34 +39,34 @@ test("initModel creates correct tensor shapes", () => {
   initModel(100);
   const wte = stateDict.get("wte");
   expect(wte.shape[0]).equal(100);
-  expect(wte.shape[1]).equal(N_EMBD);
+  expect(wte.shape[1]).equal(getNEmbd());
 
   const wpe = stateDict.get("wpe");
-  expect(wpe.shape[0]).equal(BLOCK_SIZE);
-  expect(wpe.shape[1]).equal(N_EMBD);
+  expect(wpe.shape[0]).equal(getBlockSize());
+  expect(wpe.shape[1]).equal(getNEmbd());
 
   const wq = stateDict.get("layer0.attn_wq");
-  expect(wq.shape[0]).equal(N_EMBD);
-  expect(wq.shape[1]).equal(N_EMBD);
+  expect(wq.shape[0]).equal(getNEmbd());
+  expect(wq.shape[1]).equal(getNEmbd());
 
   const fc1 = stateDict.get("layer0.mlp_fc1");
-  expect(fc1.shape[0]).equal(4 * N_EMBD);
-  expect(fc1.shape[1]).equal(N_EMBD);
+  expect(fc1.shape[0]).equal(4 * getNEmbd());
+  expect(fc1.shape[1]).equal(getNEmbd());
 
   const fc2 = stateDict.get("layer0.mlp_fc2");
-  expect(fc2.shape[0]).equal(N_EMBD);
-  expect(fc2.shape[1]).equal(4 * N_EMBD);
+  expect(fc2.shape[0]).equal(getNEmbd());
+  expect(fc2.shape[1]).equal(4 * getNEmbd());
 });
 
 test("initModel total parameter count", () => {
-  initModel(100);
-  const np = numParams();
-  // wte: 100*64 = 6400
-  // wpe: 256*64 = 16384
-  // per layer: 4*(64*64) + (256*64) + (64*256) = 4*4096 + 16384 + 16384 = 49152
-  // 2 layers: 98304
-  // total: 6400 + 16384 + 98304 = 121088
-  expect(np).equal(121088);
+  const vs: i32 = 100;
+  initModel(vs);
+  const E = getNEmbd();
+  const B = getBlockSize();
+  const L = getNLayer();
+  // wte: vs*E, wpe: B*E, per layer: 12*E*E
+  const expected = vs * E + B * E + L * 12 * E * E;
+  expect(numParams()).equal(expected);
 });
 
 test("params are in sorted key order", () => {
@@ -90,9 +90,9 @@ test("params are in sorted key order", () => {
 
 test("gpt returns logits of correct shape", () => {
   initModel(50);
-  const cacheKeys = new Array<Array<Tensor>>(N_LAYER);
-  const cacheVals = new Array<Array<Tensor>>(N_LAYER);
-  for (let li: i32 = 0; li < N_LAYER; li++) {
+  const cacheKeys = new Array<Array<Tensor>>(getNLayer());
+  const cacheVals = new Array<Array<Tensor>>(getNLayer());
+  for (let li: i32 = 0; li < getNLayer(); li++) {
     cacheKeys[li] = new Array<Tensor>();
     cacheVals[li] = new Array<Tensor>();
   }
@@ -103,9 +103,9 @@ test("gpt returns logits of correct shape", () => {
 
 test("gpt logits are finite", () => {
   initModel(50);
-  const cacheKeys = new Array<Array<Tensor>>(N_LAYER);
-  const cacheVals = new Array<Array<Tensor>>(N_LAYER);
-  for (let li: i32 = 0; li < N_LAYER; li++) {
+  const cacheKeys = new Array<Array<Tensor>>(getNLayer());
+  const cacheVals = new Array<Array<Tensor>>(getNLayer());
+  for (let li: i32 = 0; li < getNLayer(); li++) {
     cacheKeys[li] = new Array<Tensor>();
     cacheVals[li] = new Array<Tensor>();
   }
@@ -118,18 +118,18 @@ test("gpt logits are finite", () => {
 test("gpt different tokens produce different logits", () => {
   initModel(50);
   // Token 0
-  const ck1 = new Array<Array<Tensor>>(N_LAYER);
-  const cv1 = new Array<Array<Tensor>>(N_LAYER);
-  for (let li: i32 = 0; li < N_LAYER; li++) {
+  const ck1 = new Array<Array<Tensor>>(getNLayer());
+  const cv1 = new Array<Array<Tensor>>(getNLayer());
+  for (let li: i32 = 0; li < getNLayer(); li++) {
     ck1[li] = new Array<Tensor>();
     cv1[li] = new Array<Tensor>();
   }
   const l1 = gpt(0, 0, ck1, cv1);
 
   // Token 1
-  const ck2 = new Array<Array<Tensor>>(N_LAYER);
-  const cv2 = new Array<Array<Tensor>>(N_LAYER);
-  for (let li: i32 = 0; li < N_LAYER; li++) {
+  const ck2 = new Array<Array<Tensor>>(getNLayer());
+  const cv2 = new Array<Array<Tensor>>(getNLayer());
+  for (let li: i32 = 0; li < getNLayer(); li++) {
     ck2[li] = new Array<Tensor>();
     cv2[li] = new Array<Tensor>();
   }
@@ -148,9 +148,9 @@ test("gpt different tokens produce different logits", () => {
 
 test("gpt KV cache grows with sequence", () => {
   initModel(50);
-  const cacheKeys = new Array<Array<Tensor>>(N_LAYER);
-  const cacheVals = new Array<Array<Tensor>>(N_LAYER);
-  for (let li: i32 = 0; li < N_LAYER; li++) {
+  const cacheKeys = new Array<Array<Tensor>>(getNLayer());
+  const cacheVals = new Array<Array<Tensor>>(getNLayer());
+  for (let li: i32 = 0; li < getNLayer(); li++) {
     cacheKeys[li] = new Array<Tensor>();
     cacheVals[li] = new Array<Tensor>();
   }
@@ -191,9 +191,9 @@ test("weightedChoice selects one-hot correctly", () => {
 
 test("detachKvCache clears children on cached tensors", () => {
   initModel(50);
-  const cacheKeys = new Array<Array<Tensor>>(N_LAYER);
-  const cacheVals = new Array<Array<Tensor>>(N_LAYER);
-  for (let li: i32 = 0; li < N_LAYER; li++) {
+  const cacheKeys = new Array<Array<Tensor>>(getNLayer());
+  const cacheVals = new Array<Array<Tensor>>(getNLayer());
+  for (let li: i32 = 0; li < getNLayer(); li++) {
     cacheKeys[li] = new Array<Tensor>();
     cacheVals[li] = new Array<Tensor>();
   }
@@ -202,7 +202,7 @@ test("detachKvCache clears children on cached tensors", () => {
   expect(cacheKeys[0][0].children.length > 0).equal(true);
   detachKvCache(cacheKeys, cacheVals);
   // After detach, all children cleared
-  for (let li: i32 = 0; li < N_LAYER; li++) {
+  for (let li: i32 = 0; li < getNLayer(); li++) {
     for (let ti: i32 = 0; ti < cacheKeys[li].length; ti++) {
       expect(cacheKeys[li][ti].children.length).equal(0);
       expect(cacheVals[li][ti].children.length).equal(0);

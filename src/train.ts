@@ -11,10 +11,11 @@ import { vocab, getNextId, getBosId, initVocabulary } from "./vocabulary";
 import { buildBpeVocab, bpeEncodeToken, parseMerges, getBpeNextId } from "./bpe";
 import {
   initModel, gpt, stateDict, params, vocabSize,
-  N_EMBD, N_LAYER, N_HEAD, BLOCK_SIZE,
+  setHyperparams, getNEmbd, getNLayer, getNHead, getBlockSize,
 } from "./model";
 import { saveCheckpoint, loadCheckpoint } from "./checkpoint";
 import { Tensor, backward, crossEntropy, divScalar, tensorSum, concat } from "./tensor";
+import { parseConfig, configI32, configF32 } from "./config";
 
 // ===== Parse CLI args =====
 
@@ -32,15 +33,38 @@ if (args.length >= 4) {
   numSteps = I32.parseInt(args[3]);
 }
 
-// ===== Training configuration =====
+// ===== Load configuration =====
 
-const TRAIN_SEQ_LEN: i32 = 32;
-const LEARNING_RATE: f32 = f32(0.001);
-const BETA1: f32 = f32(0.9);
-const BETA2: f32 = f32(0.999);
-const EPS_ADAM: f32 = f32(1e-8);
-const CHECKPOINT_INTERVAL: i32 = 10;
+const configFd = FileSystem.open("config.sexp", "r");
+if (configFd === null) {
+  Console.error("Error: could not open config.sexp\n");
+  abort();
+}
+const configText = readFileText(configFd as Descriptor);
+if (configText === null) {
+  Console.error("Error: could not read config.sexp\n");
+  abort();
+}
+const config = parseConfig(configText as string);
+
+const nEmbd = configI32(config, "n-embd", getNEmbd());
+const nLayer = configI32(config, "n-layer", getNLayer());
+const nHead = configI32(config, "n-head", getNHead());
+const blockSize = configI32(config, "block-size", getBlockSize());
+const initScale = configF32(config, "init-scale", f32(0.02));
+setHyperparams(nEmbd, nLayer, nHead, blockSize, initScale);
+
+const TRAIN_SEQ_LEN: i32 = configI32(config, "train-seq-len", 32);
+const LEARNING_RATE: f32 = configF32(config, "learning-rate", f32(0.001));
+const BETA1: f32 = configF32(config, "beta1", f32(0.9));
+const BETA2: f32 = configF32(config, "beta2", f32(0.999));
+const EPS_ADAM: f32 = configF32(config, "eps-adam", f32(1e-8));
+const CHECKPOINT_INTERVAL: i32 = configI32(config, "checkpoint-interval", 10);
 const CHECKPOINT_PATH: string = "build/model.bin";
+
+Console.error("config: n-embd=" + nEmbd.toString() + " n-layer=" + nLayer.toString()
+  + " n-head=" + nHead.toString() + " block-size=" + blockSize.toString()
+  + " train-seq-len=" + TRAIN_SEQ_LEN.toString() + "\n");
 
 // ===== Sort helper =====
 
@@ -159,9 +183,10 @@ for (let i: i32 = 0; i < numSteps; i++) {
   const batch = getBatch(step);
 
   // Fresh KV cache
-  const cacheKeys = new Array<Array<Tensor>>(N_LAYER);
-  const cacheVals = new Array<Array<Tensor>>(N_LAYER);
-  for (let li: i32 = 0; li < N_LAYER; li++) {
+  const nLayerVal = getNLayer();
+  const cacheKeys = new Array<Array<Tensor>>(nLayerVal);
+  const cacheVals = new Array<Array<Tensor>>(nLayerVal);
+  for (let li: i32 = 0; li < nLayerVal; li++) {
     cacheKeys[li] = new Array<Tensor>();
     cacheVals[li] = new Array<Tensor>();
   }

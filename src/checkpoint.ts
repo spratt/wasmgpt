@@ -7,7 +7,7 @@ import {
 } from "@assemblyscript/wasi-shim/assembly/bindings/wasi_snapshot_preview1";
 import {
   stateDict, params, vocabSize,
-  N_EMBD, N_LAYER, N_HEAD, BLOCK_SIZE,
+  getNEmbd, getNLayer, getNHead, getBlockSize,
 } from "./model";
 
 // ===== Low-level binary I/O helpers =====
@@ -83,10 +83,10 @@ export function saveCheckpoint(
 
   // Header
   writeI32(rawfd, step);
-  writeI32(rawfd, N_EMBD);
-  writeI32(rawfd, N_LAYER);
-  writeI32(rawfd, N_HEAD);
-  writeI32(rawfd, BLOCK_SIZE);
+  writeI32(rawfd, getNEmbd());
+  writeI32(rawfd, getNLayer());
+  writeI32(rawfd, getNHead());
+  writeI32(rawfd, getBlockSize());
   writeI32(rawfd, vocabSize);
 
   // Weights in sorted key order
@@ -129,8 +129,8 @@ export function loadCheckpoint(
   const savedBlock = readI32(rawfd);
   const savedVocab = readI32(rawfd);
 
-  if (savedEmbd != N_EMBD || savedLayer != N_LAYER ||
-      savedHead != N_HEAD || savedBlock != BLOCK_SIZE ||
+  if (savedEmbd != getNEmbd() || savedLayer != getNLayer() ||
+      savedHead != getNHead() || savedBlock != getBlockSize() ||
       savedVocab != vocabSize) {
     return -2; // Config mismatch
   }
