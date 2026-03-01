@@ -78,7 +78,23 @@ All helper functions are top-level (no closures, per AssemblyScript constraints)
 
 ### Model size
 
-consgpt.lisp's Tiny config (E=64, L=2, H=4, B=256, V=1,382) has 203K parameters and trains in ~10 minutes per 100 steps on CPU. WasmGPT's Pass 1 vocabulary is ~553 tokens (before BPE additions), smaller than consgpt.lisp's 1,016, further reducing embedding and output matrix dimensions. The same Tiny config is a reasonable starting point, with the option to scale up once the pipeline is validated.
+Total parameters = 2VE + BE + L(12E² + 4E), where V = vocab size, E = embedding dimension, B = context length, L = layers. Weight tying (`lm_head` shares weights with `wte`) saves VE parameters by reusing the token embedding matrix as the output projection — both are V×E matrices that relate tokens to the embedding space, so sharing enforces symmetry and reduces parameter count. wasmgpt uses weight tying.
+
+wasmgpt's vocabulary (876 tokens after BPE) is smaller than consgpt.lisp's (1,382), reducing the embedding and output matrices.
+
+**Configurations considered (V=876):**
+
+| Config | E | L | Heads | B | Params | Checkpoint (binary, 3× for Adam) |
+|---|---|---|---|---|---|---|
+| **Current (Tiny)** | 64 | 2 | 4 | 256 | **~170K** | ~2 MB |
+| Small | 128 | 4 | 4 | 256 | **~930K** | ~11 MB |
+| Medium | 256 | 6 | 8 | 512 | **~5.0M** | ~60 MB |
+| Large | 512 | 8 | 8 | 512 | **~25M** | ~300 MB |
+| GPT-2 Small | 768 | 12 | 12 | 1024 | **~124M** | ~1.5 GB |
+
+For comparison, consgpt.lisp's Tiny config (V=1,382) has 203K params. wasmgpt's smaller vocabulary saves ~33K parameters at the same architecture.
+
+**Current config:** Tiny (E=64, L=2, H=4, B=256). Each 100-step training run completes in ~49 seconds on wasmtime, giving fast iteration before scaling up.
 
 ### Performance comparison
 
@@ -88,7 +104,7 @@ WasmGPT uses tensor-based autograd instead of consgpt.lisp's scalar autograd. Wi
 
 | Implementation | Autograd | Model | Time |
 |---|---|---|---|
-| wasmgpt (wasmtime) | Tensor | 121K params, V=757 | **49s** |
+| wasmgpt (wasmtime) | Tensor | ~170K params, V=876 | **49s** |
 | consgpt.lisp (SBCL) | Scalar | 203K params, V=1,382 | ~600s |
 
 Even accounting for the smaller model (~0.6x the parameters), wasmgpt is roughly 7-8x faster. The speedup comes from eliminating graph overhead — millions of per-scalar heap allocations, children arrays, and local-gradient lists are replaced by a handful of tensor nodes with contiguous memory.
@@ -215,7 +231,7 @@ The attention weighted sum uses `OP_SCALE` (vector * scalar tensor) instead of `
 
 ### Training pipeline (`src/train.ts`)
 
-WASI CLI program: `wasmtime --dir . build/train.wasm <corpus.wat> <merges.tsv> [numSteps]`
+WASI CLI program: `wasmtime --dir . build/train.wasm <corpus.wat> <merges.sexp> [numSteps]`
 
 **Data loading:** initVocabulary → parseMerges → buildBpeVocab → tokenize corpus → encode tokens to IDs via vocab lookup (Pass 1) or bpeEncodeToken (Pass 2).
 
@@ -251,12 +267,14 @@ Uses raw WASI `fd_write`/`fd_read` with `changetype<usize>(staticArray)` for zer
 ```
 lexer.ts
   └─ vocabulary.ts
-  └─ bpe.ts
+  └─ bpe.ts (imports lexer for S-expression parsing)
   └─ train-bpe.ts
+io.ts (safe file reading, bypasses as-wasi readString bug)
 tensor.ts (independent)
 model.ts (depends on tensor)
 checkpoint.ts (depends on model)
-train.ts (depends on all above)
+train.ts (depends on all above + io.ts)
+infer.ts (depends on model, checkpoint, bpe, io.ts)
 ```
 
 ---
@@ -309,7 +327,7 @@ A hybrid tokenizer handles both classes, following the same two-pass design as [
 
    **Key encoding:** Since AssemblyScript Maps require string keys, word arrays are encoded as `\x01`-separated strings and pair keys use `\0` as the separator (`left + "\0" + right`).
 
-   **Exports:** `bpeMerges`, `bpeVocab`, `unkId`, `tokenToChars()`, `mergePair()`, `countPairs()`, `trainBpe()`, `applyMerges()`, `bpeEncodeToken()`, `buildBpeVocab()`, `getBpeNextId()`, `serializeMerges()`, `parseMerges()`
+   **Exports:** `bpeMerges`, `bpeVocab`, `unkId`, `tokenToChars()`, `mergePair()`, `countPairs()`, `trainBpe()`, `applyMerges()`, `bpeEncodeToken()`, `buildBpeVocab()`, `getBpeNextId()`, `serializeMerges()`, `parseMerges()`, `serializeVocab()`, `parseVocab()`, `escapeForSexp()`, `unescapeFromSexp()`, `stripQuotes()`
 
 ### BPE Training Pipeline
 
@@ -320,16 +338,16 @@ BPE merge rules must be trained on a corpus before model training can begin. The
 3. **Annotate** — inject source comments via [watnot](https://github.com/spratt/watnot) (`npm run annotate`, watnot is a git submodule)
 4. **Train** — run `src/train-bpe.ts` on the annotated WAT to learn merge rules (`npm run train:bpe`)
 
-The full pipeline is chained as `npm run train:bpe`, which runs all four steps and writes merge rules to `build/merges.tsv`.
+The full pipeline is chained as `npm run train:bpe`, which runs all four steps and writes merge rules to `build/merges.sexp` and vocabulary to `build/vocab.sexp`.
 
 `src/train-bpe.ts` is a WASI CLI program (following watnot's I/O pattern) that:
 - Reads a WAT file path from CLI args
 - Tokenizes with the lexer, partitions tokens into known (in `vocab`) and unknown
 - Calls `trainBpe(unknowns, numMerges)` (default 256 merges)
-- Writes merge rules to stdout as TSV (one merge per line, tab-separated: `left\tright`)
+- Writes merge rules to `build/merges.sexp` and vocabulary to `build/vocab.sexp`
 - Writes diagnostic statistics to stderr
 
-**Merge persistence format:** Tab-separated values, one merge per line. Parsed by `parseMerges()`, serialized by `serializeMerges()`. The format is loaded by the training entry point at startup so BPE does not need to be retrained on every run.
+**Persistence format:** S-expressions with quoted strings and backslash escaping. Merges: `(merges ("left" "right") ...)`. Vocabulary: `(vocab ("token" id) ...)`. Parsed by the existing WAT lexer via `parseMerges()` and `parseVocab()`, serialized by `serializeMerges()` and `serializeVocab()`. S-expressions were chosen over TSV because BPE tokens can contain `\0`, `\n`, and `\t` which corrupt delimiter-based formats.
 
 **Initial corpus statistics** (self-referential build of wasmgpt):
 - 11,849 lines of annotated WAT
@@ -449,7 +467,7 @@ The browser deployment target opens the possibility of distributed federated tra
 | Corpus annotation | Source-map-based comment transplantation via [watnot](https://github.com/spratt/watnot) | Human-authored intent without synthetic generation |
 | Deployment | Browser (WASM + WebGPU) | Aligns with domain; no server infrastructure required |
 | Training trigger | WAT code completion | Keeps model simple; natural language deferred to fine-tuning phase |
-| BPE merge persistence | TSV (tab-separated, one merge per line) | Simple to parse in AS, human-readable, no JSON parser needed |
+| BPE/vocab persistence | S-expressions with quoted strings | Parsed by existing WAT lexer; safe for tokens containing `\0`, `\n`, `\t` |
 | Checkpoint format | Binary (raw WASI fd_write/fd_read) | Zero-copy I/O via `changetype<usize>(staticArray)`; compact and natural for WASM |
 | Self-reference | Project source in corpus | Elegant bootstrapping; increases corpus coverage of idiomatic WAT |
 

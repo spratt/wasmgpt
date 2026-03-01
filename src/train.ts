@@ -127,6 +127,9 @@ const loaded = loadCheckpoint(CHECKPOINT_PATH, adamM, adamV);
 if (loaded >= 0) {
   startStep = loaded;
   Console.error("resumed from step " + startStep.toString() + "\n");
+} else if (loaded < -1) {
+  Console.error("ERROR: failed to load checkpoint (code " + loaded.toString() + ")\n");
+  abort();
 }
 
 // ===== Batch extraction =====

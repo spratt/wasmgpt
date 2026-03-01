@@ -15,6 +15,7 @@
     "train": "npm run build:train && wasmtime --dir . build/train.wasm build/wasmgpt.annotated.wat build/merges.sexp",
     "build:infer": "asc src/infer.ts --outFile build/infer.wasm --config node_modules/@assemblyscript/wasi-shim/asconfig.json --debug",
     "infer": "npm run build:infer && wasmtime --dir . build/infer.wasm build/vocab.sexp",
+    "clean:model": "rm -f build/model.bin",
     "test": "as-test"
   },
   "devDependencies": {

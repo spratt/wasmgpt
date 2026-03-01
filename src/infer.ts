@@ -99,7 +99,8 @@ const loaded = loadCheckpoint(CHECKPOINT_PATH, adamM, adamV);
 if (loaded >= 0) {
   Console.error("loaded checkpoint: step " + loaded.toString() + "\n");
 } else {
-  Console.error("WARNING: no checkpoint found, using random weights\n");
+  Console.error("ERROR: failed to load checkpoint (code " + loaded.toString() + ")\n");
+  abort();
 }
 
 // ===== Encode prompt =====
